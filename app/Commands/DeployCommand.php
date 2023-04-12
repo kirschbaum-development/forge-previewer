@@ -28,8 +28,10 @@ class DeployCommand extends Command
         {--branch= : The name of the branch being deployed.}
         {--domain= : The domain you\'d like to use for deployments.}
         {--php-version=php81 : The version of PHP the site should use, e.g. php81, php80, ...}
+        {--setup-command=* : A command you would like to execute after configuring the git repo.}
         {--command=* : A command you would like to execute on the site, e.g. php artisan db:seed.}
         {--edit-env=* : The colon-separated name and value that will be added/updated in the site\'s environment, e.g. "MY_API_KEY:my_api_key_value".}
+        {--deployment-script= : The deployment script to replace Forge\'s deployment script.}
         {--scheduler : Setup a cronjob to run Laravel\'s scheduler.}
         {--isolate : Enable site isolation.}
         {--ci : Add additional output for your CI provider.}
@@ -52,6 +54,16 @@ class DeployCommand extends Command
         }
 
         $site = $this->findOrCreateSite($server);
+
+        if ($this->option('deployment-script')) {
+            $this->information('Updating deployment script');
+
+            $deploymentScript = str_contains($this->option('deployment-script'), '@')
+                ? file_get_contents(str_replace('@', '', $this->option('deployment-script')))
+                : $this->option('deployment-script');
+
+            $site->updateDeploymentScript($this->replaceVariables($deploymentScript));
+        }
 
         if (! $this->option('no-db')) {
             $this->maybeCreateDatabase($server, $site);
@@ -90,6 +102,8 @@ class DeployCommand extends Command
 
     protected function updateEnvVariable(string $name, string $value, string $source): string
     {
+        $value = $this->replaceVariables($value);
+
         if (! str_contains($source, "{$name}=")) {
             $source .= PHP_EOL . "{$name}={$value}";
         } else {
@@ -220,6 +234,18 @@ class DeployCommand extends Command
             $site->enableQuickDeploy();
         }
 
+        foreach ($this->option('setup-command') as $i => $command) {
+            if ($i === 0) {
+                $this->information('Executing set up command(s)');
+            }
+
+            $this->information('Executing: ' . $command);
+
+            $this->forge->executeSiteCommand($server->id, $site->id, [
+                'command' => $command,
+            ]);
+        }
+
         $this->information('Generating SSL certificate');
 
         $this->forge->obtainLetsEncryptCertificate($server->id, $site->id, [
@@ -227,5 +253,13 @@ class DeployCommand extends Command
         ]);
 
         return $site;
+    }
+
+    protected function replaceVariables(string $string): string
+    {
+        $branch = $this->getBranchName();
+        $domain = $this->generateSiteDomain();
+
+        return str_replace(['{domain}', '{branch}'], [$domain, $branch], $string);
     }
 }
