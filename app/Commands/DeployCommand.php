@@ -37,7 +37,10 @@ class DeployCommand extends Command
         {--ci : Add additional output for your CI provider.}
         {--no-quick-deploy : Create your site without "Quick Deploy".}
         {--no-deploy : Avoid deploying the site.}
-        {--no-db : Avoid creating a database.}';
+        {--no-db : Avoid creating a database.}
+        {--wildcard : Create a site with wildcard subdomains.}
+        {--route-53-key= : AWS Route 53 key for wildcard subdomains SSL certificate.}
+        {--route-53-secret= : AWS Route 53 key for wildcard subdomains SSL certificate.}';
 
     protected $description = 'Deploy a branch / pull request to Laravel Forge.';
 
@@ -45,6 +48,8 @@ class DeployCommand extends Command
 
     public function handle(Forge $forge)
     {
+        $this->validateOptions();
+
         $this->forge = $forge->setApiKey($this->getForgeToken())
             ->setTimeout(config('app.timeout'));
 
@@ -208,7 +213,8 @@ class DeployCommand extends Command
             'domain' => $domain,
             'project_type' => 'php',
             'php_version' => $this->option('php-version'),
-            'directory' => '/public'
+            'directory' => '/public',
+            'wildcards' => $this->option('wildcard')
         ];
 
         if ($this->option('isolate')) {
@@ -249,9 +255,20 @@ class DeployCommand extends Command
 
         $this->information('Generating SSL certificate');
 
-        $this->forge->obtainLetsEncryptCertificate($server->id, $site->id, [
+        $letsEncryptCertificateData = [
             'domains' => [$this->generateSiteDomain()],
-        ]);
+        ];
+
+        if ($this->option('wildcard')) {
+            $letsEncryptCertificateData['domains'] = ['*.' . $this->generateSiteDomain()];
+            $letsEncryptCertificateData['dns_provider'] = [
+                'type' => 'route53',
+                'route53_key' => $this->option('route-53-key'),
+                'route53_secret' => $this->option('route-53-secret'),
+            ];
+        }
+
+        $this->forge->obtainLetsEncryptCertificate($server->id, $site->id, $letsEncryptCertificateData);
 
         return $site;
     }
