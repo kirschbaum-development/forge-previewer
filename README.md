@@ -77,7 +77,7 @@ Options:
 
 To add or update environment values, the `--edit-env` option may be used.
 ```bash
-php forge-previewer deploy --edit-env=APP_URL:staging.example.com --edit-env=APP_ENV:staging
+forge-previewer deploy --edit-env=APP_URL:staging.example.com --edit-env=APP_ENV:staging
 ```
 
 If found, values will be taken from a `.env.staging` file. The values set through `--edit-env` options will take precedence.
