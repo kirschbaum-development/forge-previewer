@@ -49,21 +49,44 @@ Usage:
   deploy [options]
 
 Options:
-    --token[=TOKEN]              The Forge API token.
-    --server[=SERVER]            The ID of the target server.
-    --provider[=PROVIDER]        The Git provider. [default: "github"]
-    --repo[=REPO]                The name of the repository being deployed.
-    --branch[=BRANCH]            The name of the branch being deployed.
-    --domain[=DOMAIN]            The domain you'd like to use for deployments, e.g. mydomain.com.
-    --php-version[=PHP-VERSION]  The version of PHP the site should use, e.g. php81, php80, ... [default: "php81"]
-    --command[=COMMAND]          A command you would like to execute on the site, e.g. php artisan db:seed. (multiple values allowed)
-    --edit-env[=EDIT-ENV]        The colon-separated name and value that will be added/updated in the site's environment, e.g. "MY_API_KEY:my_api_key_value" or "APP_URL=https://{domain}". (multiple values allowed) (available variables: {domain}, {branch})
-    --scheduler                  Setup a cronjob to run Laravel's scheduler.
-    --no-quick-deploy            Create your site without "Quick Deploy".
-    --no-deploy                  Avoid deploying the site.
+    --token[=TOKEN]                          The Forge API token.
+    --server[=SERVER]                        The ID of the target server.
+    --provider[=PROVIDER]                    The Git provider. [default: "github"]
+    --repo[=REPO]                            The name of the repository being deployed.
+    --branch[=BRANCH]                        The name of the branch being deployed.
+    --domain[=DOMAIN]                        The domain you'd like to use for deployments.
+    --php-version[=PHP-VERSION]              The version of PHP the site should use, e.g. php81, php80, ... [default: "php81"]
+    --setup-command[=SETUP-COMMAND]          A command you would like to execute after configuring the git repo. (multiple values allowed)
+    --command[=COMMAND]                      A command you would like to execute on the site, e.g. php artisan db:seed. (multiple values allowed)
+    --edit-env[=EDIT-ENV]                    The colon-separated name and value that will be added/updated in the site's environment, e.g. "MY_API_KEY:my_api_key_value". (multiple values allowed)
+    --deployment-script[=DEPLOYMENT-SCRIPT]  The deployment script to replace Forge's deployment script.
+    --scheduler                              Setup a cronjob to run Laravel's scheduler.
+    --isolate                                Enable site isolation.
+    --ci                                     Add additional output for your CI provider.
+    --no-quick-deploy                        Create your site without "Quick Deploy".
+    --no-deploy                              Avoid deploying the site.
+    --no-db                                  Avoid creating a database.
+    --wildcard                               Create a site with wildcard subdomains.
+    --route-53-key[=ROUTE-53-KEY]            AWS Route 53 key for wildcard subdomains SSL certificate.
+    --route-53-secret[=ROUTE-53-SECRET]      AWS Route 53 secret for wildcard subdomains SSL certificate.
 ```
 
 > **Note**: the `deploy` command can be run multiple times and will skip any steps that have already been run previously.
+
+#### Environment overrides
+
+To add or update environment values, the `--edit-env` option may be used.
+```bash
+php forge-previewer deploy --edit-env=APP_URL:staging.example.com --edit-env=APP_ENV:staging
+```
+
+If found, values will be taken from a `.env.staging` file. The values set through `--edit-env` options will take precedence.
+
+Example `.env.staging` file:
+```dotenv
+APP_URL=staging.example.com
+APP_ENV=staging
+```
 
 ### `destroy`
 
@@ -90,4 +113,58 @@ Since Forge Previewer is convention based, we will try to detect resources based
 
 ## Example Workflow
 
-_TODO_
+### Feature Branch Deployments
+```yaml
+name: Feature Branch Deployments
+
+on:
+  push:
+    branches:
+      - '**'      # matches every branch
+      - '!main'   # excludes main
+
+jobs:
+  deploy:
+    name: Feature Branch Deployment
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v1
+    - name: Get branch name
+      id: branch-name
+      uses: tj-actions/branch-names@v6
+
+    - name: Setup PHP
+      uses: shivammathur/setup-php@master
+      with:
+        php-version: 8.1
+
+    - name: Deploy
+      run: ./devops/staging/forge-previewer deploy --token="${{ secrets.FORGE_API_TOKEN }}" --server="${{ secrets.FORGE_SERVER_ID }}" --repo=example/demo --branch=${GITHUB_REF##*/} --domain=example.com --php-version=php81 --no-db --edit-env="APP_URL:https://{domain}" --wildcard --route-53-key="${{ secrets.AWS_ROUTE_53_KEY }}" --route-53-secret="${{ secrets.AWS_ROUTE_53_SECRET }}"
+```
+
+### Feature Branch Deployments Deletion
+
+```yaml
+name: Feature Branch Deployment Deletion
+
+on:
+  delete:
+    branches:
+      - '**'      # matches every branch
+      - '!main'   # excludes main
+
+jobs:
+  deploy:
+    name: Feature Branch Deployment Deletion
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v1
+
+    - name: Setup PHP
+      uses: shivammathur/setup-php@master
+      with:
+        php-version: 8.1
+
+    - name: Deploy
+      run: ./devops/staging/forge-previewer destroy --token="${{ secrets.FORGE_API_TOKEN }}" --server="${{ secrets.FORGE_SERVER_ID }}" --repo=example/demo --branch=${GITHUB_REF##*/} --domain=example.com
+```

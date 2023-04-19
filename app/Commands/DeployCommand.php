@@ -42,7 +42,7 @@ class DeployCommand extends Command
         {--no-db : Avoid creating a database.}
         {--wildcard : Create a site with wildcard subdomains.}
         {--route-53-key= : AWS Route 53 key for wildcard subdomains SSL certificate.}
-        {--route-53-secret= : AWS Route 53 key for wildcard subdomains SSL certificate.}';
+        {--route-53-secret= : AWS Route 53 secret for wildcard subdomains SSL certificate.}';
 
     protected $description = 'Deploy a branch / pull request to Laravel Forge.';
 
