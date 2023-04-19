@@ -5,6 +5,7 @@ namespace App\Commands;
 use App\Commands\Concerns\GeneratesDatabaseInfo;
 use App\Commands\Concerns\GeneratesSiteInfo;
 use Exception;
+use Illuminate\Support\Facades\File;
 use Laravel\Forge\Forge;
 use Illuminate\Support\Str;
 use Laravel\Forge\Resources\Site;
@@ -12,6 +13,7 @@ use Laravel\Forge\Resources\Server;
 use App\Commands\Concerns\HandlesOutput;
 use App\Commands\Concerns\InteractsWithEnv;
 use LaravelZero\Framework\Commands\Command;
+use Symfony\Component\Console\Exception\InvalidOptionException;
 
 class DeployCommand extends Command
 {
@@ -55,8 +57,8 @@ class DeployCommand extends Command
 
         try {
             $server = $forge->server($this->getForgeServer());
-        } catch (Exception $_) {
-            return $this->fail("Failed to find server.");
+        } catch (Exception $exception) {
+            return $this->fail("Failed to find server. Exception: " . $exception->getMessage());
         }
 
         $site = $this->findOrCreateSite($server);
@@ -75,12 +77,12 @@ class DeployCommand extends Command
             $this->maybeCreateDatabase($server, $site);
         }
 
-        if ($this->option('edit-env')) {
+        if (!empty($this->getEnvOverrides())) {
             $this->information('Updating environment variables');
 
             $envSource = $forge->siteEnvironmentFile($server->id, $site->id);
 
-            foreach ($this->option('edit-env') as $env) {
+            foreach ($this->getEnvOverrides() as $env) {
                 [$key, $value] = explode(':', $env, 2);
 
                 $envSource = $this->updateEnvVariable($key, $value, $envSource);
@@ -279,5 +281,35 @@ class DeployCommand extends Command
         $domain = $this->generateSiteDomain();
 
         return str_replace(['{domain}', '{branch}'], [$domain, $branch], $string);
+    }
+
+    /**
+     * @throws InvalidOptionException
+     */
+    protected function validateOptions(): void
+    {
+        if ($this->option('wildcard')) {
+            if (!$this->option('route-53-key') || !$this->option('route-53-secret')) {
+                throw new InvalidOptionException('--route-53-key and --route-53-secret options are required when site will have wildcard subdomains.');
+            }
+        }
+    }
+
+    protected function getEnvOverrides(): array
+    {
+        return array_merge($this->getStagingOverrides(), $this->option('edit-env'));
+    }
+
+    protected function getStagingOverrides(): array
+    {
+        if (File::exists('.env.staging')) {
+            return Str::of(File::get('.env.staging'))
+                ->trim()
+                ->replace('=', ':')
+                ->split("/\n/")
+                ->toArray();
+        }
+
+        return [];
     }
 }
