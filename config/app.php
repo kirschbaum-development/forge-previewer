@@ -57,4 +57,5 @@ return [
         App\Providers\AppServiceProvider::class,
     ],
 
+    'timeout' => 120,
 ];

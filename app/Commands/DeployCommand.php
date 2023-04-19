@@ -46,7 +46,7 @@ class DeployCommand extends Command
     public function handle(Forge $forge)
     {
         $this->forge = $forge->setApiKey($this->getForgeToken())
-            ->setTimeout(120);
+            ->setTimeout(config('app.timeout'));
 
         try {
             $server = $forge->server($this->getForgeServer());
