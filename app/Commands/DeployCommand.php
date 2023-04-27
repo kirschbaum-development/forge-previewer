@@ -234,7 +234,7 @@ class DeployCommand extends Command
             'provider' => $this->option('provider'),
             'repository' => $this->getRepoName(),
             'branch' => $this->getBranchName(),
-            'composer' => true,
+            'composer' => false,
         ]);
 
         if (! $this->option('no-quick-deploy')) {
