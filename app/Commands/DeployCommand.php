@@ -42,7 +42,9 @@ class DeployCommand extends Command
         {--no-db : Avoid creating a database.}
         {--wildcard : Create a site with wildcard subdomains.}
         {--route-53-key= : AWS Route 53 key for wildcard subdomains SSL certificate.}
-        {--route-53-secret= : AWS Route 53 secret for wildcard subdomains SSL certificate.}';
+        {--route-53-secret= : AWS Route 53 secret for wildcard subdomains SSL certificate.}
+        {--nginx-template= : The nginx template ID to use on your Laravel Forge website.}
+    ';
 
     protected $description = 'Deploy a branch / pull request to Laravel Forge.';
 
@@ -224,6 +226,12 @@ class DeployCommand extends Command
 
             $data['isolation'] = true;
             $data['username'] = str($this->getBranchName())->slug();
+        }
+
+        if ($this->option('nginx-template')) {
+            $this->information('Using custom nginx template');
+
+            $data['nginx_template'] = $this->option('nginx-template');
         }
 
         $site = $this->forge->createSite($server->id, $data);
