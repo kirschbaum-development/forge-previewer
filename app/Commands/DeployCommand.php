@@ -42,7 +42,8 @@ class DeployCommand extends Command
         {--no-db : Avoid creating a database.}
         {--wildcard : Create a site with wildcard subdomains.}
         {--route-53-key= : AWS Route 53 key for wildcard subdomains SSL certificate.}
-        {--route-53-secret= : AWS Route 53 secret for wildcard subdomains SSL certificate.}';
+        {--route-53-secret= : AWS Route 53 secret for wildcard subdomains SSL certificate.}
+        {--timeout= : Change default timeout (120). In seconds.}';
 
     protected $description = 'Deploy a branch / pull request to Laravel Forge.';
 
@@ -53,7 +54,7 @@ class DeployCommand extends Command
         $this->validateOptions();
 
         $this->forge = $forge->setApiKey($this->getForgeToken())
-            ->setTimeout(config('app.timeout'));
+            ->setTimeout((int)($this->option('timeout') ?? config('app.timeout')));
 
         try {
             $server = $forge->server($this->getForgeServer());
