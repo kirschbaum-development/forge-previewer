@@ -289,7 +289,7 @@ class DeployCommand extends Command
         $branch = $this->getBranchName();
         $domain = $this->generateSiteDomain();
 
-        return str_replace(['{domain}', '{branch}', '{branch_snake_case}'], [$domain, $branch, Str::snake($branch)], $string);
+        return str_replace(['{domain}', '{branch}', '{branch_snake_case}'], [$domain, $branch, Str::replace('-', '_', $branch)], $string);
     }
 
     /**
