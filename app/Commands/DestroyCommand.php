@@ -25,7 +25,8 @@ class DestroyCommand extends Command
         {--server= : The ID of the target server.}
         {--repo= : The name of the repository being deployed.}
         {--branch= : The name of the branch being deployed.}
-        {--domain= : The domain you\'d like to use for deployments.}';
+        {--domain= : The domain you\'d like to use for deployments.}
+        {--pre-destroy-command= : Command to run before destroying the site.}';
 
     protected $description = 'Destroy a previously created preview site.';
 
@@ -48,6 +49,18 @@ class DestroyCommand extends Command
         }
 
         $this->information('Found site.');
+
+        foreach ($this->option('pre-destroy-command') as $i => $command) {
+            if ($i === 0) {
+                $this->information('Executing set up command(s)');
+            }
+
+            $this->information('Executing: ' . $command);
+
+            $this->forge->executeSiteCommand($server->id, $site->id, [
+                'command' => $command,
+            ]);
+        }
 
         foreach ($forge->certificates($server->id, $site->id) as $certificate) {
             if ($certificate->domain === $this->generateSiteDomain()) {
