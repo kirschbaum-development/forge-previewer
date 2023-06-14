@@ -3,10 +3,10 @@
 namespace App\Commands;
 
 use Exception;
+use Illuminate\Support\Str;
 use Laravel\Forge\Forge;
 use App\Commands\Concerns\HandlesOutput;
 use App\Commands\Concerns\InteractsWithEnv;
-use Illuminate\Console\Scheduling\Schedule;
 use LaravelZero\Framework\Commands\Command;
 use App\Commands\Concerns\GeneratesSiteInfo;
 use App\Commands\Concerns\GeneratesDatabaseInfo;
@@ -118,6 +118,6 @@ class DestroyCommand extends Command
         $branch = $this->getBranchName();
         $domain = $this->generateSiteDomain();
 
-        return str_replace(['{domain}', '{branch}'], [$domain, $branch], $string);
+        return str_replace(['{domain}', '{branch}', '{branch_snake_case}'], [$domain, $branch, Str::replace('-', '_', $branch)], $string);
     }
 }
