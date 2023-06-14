@@ -52,8 +52,10 @@ class DestroyCommand extends Command
 
         foreach ($this->option('pre-destroy-command') as $i => $command) {
             if ($i === 0) {
-                $this->information('Executing set up command(s)');
+                $this->information('Executing pre-destroy command(s)');
             }
+
+            $command = $this->replaceVariables($command);
 
             $this->information('Executing: ' . $command);
 
@@ -109,5 +111,13 @@ class DestroyCommand extends Command
         }
 
         return null;
+    }
+
+    protected function replaceVariables(string $string): string
+    {
+        $branch = $this->getBranchName();
+        $domain = $this->generateSiteDomain();
+
+        return str_replace(['{domain}', '{branch}'], [$domain, $branch], $string);
     }
 }
