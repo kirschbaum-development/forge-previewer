@@ -26,7 +26,7 @@ class DestroyCommand extends Command
         {--repo= : The name of the repository being deployed.}
         {--branch= : The name of the branch being deployed.}
         {--domain= : The domain you\'d like to use for deployments.}
-        {--pre-destroy-command= : Command to run before destroying the site.}';
+        {--pre-destroy-command=* : Command to run before destroying the site.}';
 
     protected $description = 'Destroy a previously created preview site.';
 
