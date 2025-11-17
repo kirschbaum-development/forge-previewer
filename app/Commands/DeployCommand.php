@@ -267,11 +267,11 @@ class DeployCommand extends Command
         $this->information('Generating SSL certificate');
 
         $letsEncryptCertificateData = [
-            'domains' => [$this->generateSiteDomain()],
+            'domains' => [$domain],
         ];
 
         if ($this->option('wildcard')) {
-            $letsEncryptCertificateData['domains'] = ['*.' . $this->generateSiteDomain()];
+            $letsEncryptCertificateData['domains'][] = '*.' . $domain;
             $letsEncryptCertificateData['dns_provider'] = [
                 'type' => 'route53',
                 'route53_key' => $this->option('route-53-key'),
