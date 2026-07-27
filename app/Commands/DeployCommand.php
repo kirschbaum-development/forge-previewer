@@ -58,6 +58,10 @@ class DeployCommand extends Command
         $this->forge = $forge->setApiKey($this->getForgeToken())
             ->setTimeout((int)($this->option('timeout') ?? config('app.timeout')));
 
+        if ($timeout = $this->option('timeout')) {
+            $this->forge->setTimeout($timeout);
+        }
+
         try {
             $server = $forge->server($this->getForgeServer());
         } catch (Exception $exception) {

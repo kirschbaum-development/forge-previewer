@@ -4,4 +4,3 @@
 /.vagrant
 .phpunit.result.cache
 .env
-composer.lock
