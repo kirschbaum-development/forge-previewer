@@ -6,7 +6,7 @@ use function Termwind\render;
 
 trait HandlesOutput
 {
-    protected function fail(string $message): int
+    protected function bail(string $message): int
     {
         render(sprintf(<<<'html'
             <div class="font-bold">

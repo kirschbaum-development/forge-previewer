@@ -65,7 +65,7 @@ class DeployCommand extends Command
         try {
             $server = $forge->server($this->getForgeServer());
         } catch (Exception $exception) {
-            return $this->fail("Failed to find server. Exception: " . $exception->getMessage());
+            return $this->bail("Failed to find server. Exception: " . $exception->getMessage());
         }
 
         $site = $this->findOrCreateSite($server);

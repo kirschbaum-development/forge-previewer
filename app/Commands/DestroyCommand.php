@@ -39,13 +39,13 @@ class DestroyCommand extends Command
         try {
             $server = $forge->server($this->getForgeServer());
         } catch (Exception $_) {
-            return $this->fail("Failed to find server.");
+            return $this->bail("Failed to find server.");
         }
 
         $site = $this->findSite($server);
 
         if (! $site) {
-            return $this->fail('Failed to find site.');
+            return $this->bail('Failed to find site.');
         }
 
         $this->information('Found site.');
