@@ -4,10 +4,13 @@ namespace App\Commands;
 
 use App\Commands\Concerns\GeneratesDatabaseInfo;
 use App\Commands\Concerns\GeneratesSiteInfo;
+use App\Commands\Concerns\ResolvesOrganization;
 use Exception;
 use Illuminate\Support\Facades\File;
 use Laravel\Forge\Forge;
 use Illuminate\Support\Str;
+use Laravel\Forge\Exceptions\ForbiddenException;
+use Laravel\Forge\Exceptions\NotFoundException;
 use Laravel\Forge\Resources\Site;
 use Laravel\Forge\Resources\Server;
 use App\Commands\Concerns\HandlesOutput;
@@ -19,17 +22,19 @@ class DeployCommand extends Command
 {
     use HandlesOutput;
     use InteractsWithEnv;
+    use ResolvesOrganization;
     use GeneratesSiteInfo;
     use GeneratesDatabaseInfo;
 
     protected $signature = 'deploy
         {--token=  : The Forge API token.}
+        {--org= : The slug of the Forge organization. Required for API v2 (or set FORGE_ORG).}
         {--server= : The ID of the target server.}
         {--provider=github : The Git provider.}
         {--repo= : The name of the repository being deployed.}
         {--branch= : The name of the branch being deployed.}
         {--domain= : The domain you\'d like to use for deployments.}
-        {--php-version=php81 : The version of PHP the site should use, e.g. php81, php80, ...}
+        {--php-version=php84 : The version of PHP the site should use, e.g. php84, php83, ...}
         {--setup-command=* : A command you would like to execute after configuring the git repo.}
         {--command=* : A command you would like to execute on the site, e.g. php artisan db:seed.}
         {--edit-env=* : The colon-separated name and value that will be added/updated in the site\'s environment, e.g. "MY_API_KEY:my_api_key_value".}
@@ -51,6 +56,8 @@ class DeployCommand extends Command
 
     protected Forge $forge;
 
+    protected string $org;
+
     public function handle(Forge $forge)
     {
         $this->validateOptions();
@@ -58,12 +65,17 @@ class DeployCommand extends Command
         $this->forge = $forge->setApiKey($this->getForgeToken())
             ->setTimeout((int)($this->option('timeout') ?? config('app.timeout')));
 
-        if ($timeout = $this->option('timeout')) {
-            $this->forge->setTimeout($timeout);
+        if (! $org = $this->getOrganization()) {
+            return $this->bail('The --org option (or FORGE_ORG environment variable) is required.' . $this->availableOrganizationsHint());
         }
 
+        $this->org = $org;
+        $serverId = (int) $this->getForgeServer();
+
         try {
-            $server = $forge->server($this->getForgeServer());
+            $server = $this->forge->server($this->org, $serverId);
+        } catch (NotFoundException | ForbiddenException $exception) {
+            return $this->bail("Failed to find server {$serverId} in organization '{$this->org}'." . $this->availableOrganizationsHint());
         } catch (Exception $exception) {
             return $this->bail("Failed to find server. Exception: " . $exception->getMessage());
         }
@@ -77,7 +89,9 @@ class DeployCommand extends Command
                 ? file_get_contents(str_replace('@', '', $this->option('deployment-script')))
                 : $this->option('deployment-script');
 
-            $site->updateDeploymentScript($this->replaceVariables($deploymentScript));
+            $this->forge->updateDeploymentScript($this->org, $server->id, $site->id, [
+                'content' => $this->replaceVariables($deploymentScript),
+            ]);
         }
 
         if (! $this->option('no-db')) {
@@ -87,7 +101,7 @@ class DeployCommand extends Command
         if (!empty($this->getEnvOverrides())) {
             $this->information('Updating environment variables');
 
-            $envSource = $forge->siteEnvironmentFile($server->id, $site->id);
+            $envSource = $this->forge->siteEnvironment($this->org, $server->id, $site->id);
 
             foreach ($this->getEnvOverrides() as $env) {
                 [$key, $value] = explode(':', $env, 2);
@@ -95,19 +109,19 @@ class DeployCommand extends Command
                 $envSource = $this->updateEnvVariable($key, $value, $envSource);
             }
 
-            $forge->updateSiteEnvironmentFile($server->id, $site->id, $envSource);
+            $this->forge->updateSiteEnvironment($this->org, $server->id, $site->id, $envSource);
         }
 
         $this->information('Deploying');
 
-        $site->deploySite();
+        $this->forge->createDeployment($this->org, $server->id, $site->id);
 
         foreach ($this->option('command') as $i => $command) {
             if ($i === 0) {
                 $this->information('Executing site command(s)');
             }
 
-            $forge->executeSiteCommand($server->id, $site->id, [
+            $this->forge->createCommand($this->org, $server->id, $site->id, [
                 'command' => $command,
             ]);
         }
@@ -136,7 +150,7 @@ class DeployCommand extends Command
 
         $command = $this->buildScheduledJobCommand();
 
-        foreach ($this->forge->jobs($server->id) as $job) {
+        foreach ($this->forge->scheduledJobs($this->org, $server->id)->lazy() as $job) {
             if ($job->command === $command) {
                 $this->information('Scheduler job already exists');
                 return;
@@ -145,7 +159,7 @@ class DeployCommand extends Command
 
         $this->information('Creating scheduler job');
 
-        $this->forge->createJob($server->id, [
+        $this->forge->createScheduledJob($this->org, $server->id, [
             'command' => $command,
             'frequency' => 'minutely',
             'user' => 'forge',
@@ -161,7 +175,7 @@ class DeployCommand extends Command
     {
         $name = $this->getDatabaseName();
 
-        foreach ($this->forge->databases($server->id) as $database) {
+        foreach ($this->forge->databases($this->org, $server->id)->lazy() as $database) {
             if ($database->name === $name) {
                 $this->information('Database already exists.');
 
@@ -171,7 +185,8 @@ class DeployCommand extends Command
 
         $this->information('Creating database');
 
-        $this->forge->createDatabase($server->id, [
+        // API v2 accepts the user/password alongside the schema, creating both in one call.
+        $this->forge->createDatabase($this->org, $server->id, [
             'name' => $this->getDatabaseName(),
             'user' => $this->getDatabaseUserName(),
             'password' => $this->getDatabasePassword(),
@@ -179,7 +194,7 @@ class DeployCommand extends Command
 
         $this->information('Updating site environment variables');
 
-        $env = $this->forge->siteEnvironmentFile($server->id, $site->id);
+        $env = $this->forge->siteEnvironment($this->org, $server->id, $site->id);
         $env = preg_replace([
             "/DB_DATABASE=.*/",
             "/DB_USERNAME=.*/",
@@ -190,25 +205,34 @@ class DeployCommand extends Command
             "DB_PASSWORD={$this->getDatabasePassword()}"
         ], $env);
 
-        $this->forge->updateSiteEnvironmentFile($server->id, $site->id, $env);
+        $this->forge->updateSiteEnvironment($this->org, $server->id, $site->id, $env);
     }
 
     protected function maybeOutput(string $key, string $value): void
     {
-        if ($this->option('ci')) {
-            // @TODO: Support different providers, (currently outputing in GitHub format)
-            $this->line("::set-output name=forge_previewer_{$key}::$value");
+        if (! $this->option('ci')) {
+            return;
         }
+
+        // @TODO: Support different providers, (currently outputing in GitHub format)
+        $line = "forge_previewer_{$key}={$value}";
+
+        if (($githubOutput = getenv('GITHUB_OUTPUT')) && is_writable($githubOutput)) {
+            file_put_contents($githubOutput, $line . PHP_EOL, FILE_APPEND);
+
+            return;
+        }
+
+        $this->line($line);
     }
 
     protected function findOrCreateSite(Server $server): Site
     {
-        $sites = $this->forge->sites($server->id);
         $domain = $this->generateSiteDomain();
 
         $this->maybeOutput('domain', $domain);
 
-        foreach ($sites as $site) {
+        foreach ($this->forge->serverSites($this->org, $server->id)->lazy() as $site) {
             if ($site->name === $domain) {
                 $this->information('Found existing site.');
 
@@ -218,43 +242,37 @@ class DeployCommand extends Command
 
         $this->information('Creating site with domain ' . $domain);
 
+        // The repository install (source_control_provider/repository/branch) and
+        // quick-deploy (push_to_deploy) are folded into site creation on API v2 —
+        // the standalone installGitRepository()/enableQuickDeploy() calls are gone.
         $data = [
-            'domain' => $domain,
-            'project_type' => 'php',
+            'type' => 'laravel',
+            'domain_mode' => 'custom',
+            'name' => $domain,
             'php_version' => $this->option('php-version'),
-            'directory' => '/public',
-            'wildcards' => $this->option('wildcard')
+            'web_directory' => '/public',
+            'allow_wildcard_subdomains' => (bool) $this->option('wildcard'),
+            'source_control_provider' => $this->option('provider'),
+            'repository' => $this->getRepoName(),
+            'branch' => $this->getBranchName(),
+            'install_composer_dependencies' => true,
+            'push_to_deploy' => ! $this->option('no-quick-deploy'),
         ];
 
         if ($this->option('isolate')) {
             $this->information('Enabling site isolation');
 
-            $data['isolation'] = true;
-            $data['username'] = str($this->getBranchName())->slug();
+            $data['is_isolated'] = true;
+            $data['isolated_user'] = str($this->getBranchName())->slug()->toString();
         }
 
         if ($this->option('nginx-template')) {
             $this->information('Using custom nginx template');
 
-            $data['nginx_template'] = $this->option('nginx-template');
+            $data['nginx_template_id'] = (int) $this->option('nginx-template');
         }
 
-        $site = $this->forge->createSite($server->id, $data);
-
-        $this->information('Installing Git repository');
-
-        $site->installGitRepository([
-            'provider' => $this->option('provider'),
-            'repository' => $this->getRepoName(),
-            'branch' => $this->getBranchName(),
-            'composer' => true,
-        ]);
-
-        if (! $this->option('no-quick-deploy')) {
-            $this->information('Enabling quick deploy');
-
-            $site->enableQuickDeploy();
-        }
+        $site = $this->forge->createSite($this->org, $server->id, $data);
 
         foreach ($this->option('setup-command') as $i => $command) {
             if ($i === 0) {
@@ -263,29 +281,59 @@ class DeployCommand extends Command
 
             $this->information('Executing: ' . $command);
 
-            $this->forge->executeSiteCommand($server->id, $site->id, [
+            $this->forge->createCommand($this->org, $server->id, $site->id, [
                 'command' => $command,
             ]);
         }
 
         $this->information('Generating SSL certificate');
 
-        $letsEncryptCertificateData = [
-            'domains' => [$domain],
-        ];
-
-        if ($this->option('wildcard')) {
-            $letsEncryptCertificateData['domains'][] = '*.' . $domain;
-            $letsEncryptCertificateData['dns_provider'] = [
-                'type' => 'route53',
-                'route53_key' => $this->option('route-53-key'),
-                'route53_secret' => $this->option('route-53-secret'),
-            ];
-        }
-
-        $this->forge->obtainLetsEncryptCertificate($server->id, $site->id, $letsEncryptCertificateData);
+        $this->obtainCertificate($server, $site, $domain);
 
         return $site;
+    }
+
+    /**
+     * Request a Let's Encrypt certificate for the site's primary domain.
+     *
+     * API v2 issues certificates per-domain: we look up the domain record created
+     * with the site and request the certificate against it. Wildcard coverage comes
+     * from the domain's allow_wildcard_subdomains flag + a dns-01 challenge; the
+     * DNS provider credentials must be configured in Forge itself (v2 has no field
+     * to pass them via the API, so --route-53-key/--route-53-secret are no longer
+     * forwarded — they remain accepted for CLI backwards-compatibility).
+     */
+    protected function obtainCertificate(Server $server, Site $site, string $domain): void
+    {
+        $domainId = $this->findPrimaryDomainId($server, $site, $domain);
+
+        if ($domainId === null) {
+            $this->information('Skipping SSL certificate: could not find the primary domain record for ' . $domain . '.');
+
+            return;
+        }
+
+        if ($this->option('wildcard')) {
+            $this->information('Requesting a wildcard certificate via DNS (dns-01). Ensure your DNS provider credentials are configured in Forge — --route-53-key/--route-53-secret are no longer sent to the Forge API v2.');
+        }
+
+        $this->forge->createCertificate($this->org, $server->id, $site->id, $domainId, [
+            'type' => 'letsencrypt',
+            'letsencrypt' => [
+                'verification_method' => $this->option('wildcard') ? 'dns-01' : 'http-01',
+            ],
+        ]);
+    }
+
+    protected function findPrimaryDomainId(Server $server, Site $site, string $domain): ?int
+    {
+        foreach ($this->forge->domains($this->org, $server->id, $site->id)->lazy() as $siteDomain) {
+            if ($siteDomain->name === $domain) {
+                return $siteDomain->id;
+            }
+        }
+
+        return null;
     }
 
     protected function replaceVariables(string $string): string

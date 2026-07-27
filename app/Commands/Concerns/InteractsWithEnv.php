@@ -18,6 +18,11 @@ trait InteractsWithEnv
         return $this->env('FORGE_DOMAIN', or: $this->option('domain'));
     }
 
+    protected function getOrganization()
+    {
+        return $this->env('FORGE_ORG', or: $this->option('org'));
+    }
+
     protected function getForgeServer()
     {
         return $this->env('FORGE_SERVER', or: $this->option('server'));

@@ -7,21 +7,26 @@ use Illuminate\Support\Str;
 use Laravel\Forge\Forge;
 use App\Commands\Concerns\HandlesOutput;
 use App\Commands\Concerns\InteractsWithEnv;
-use LaravelZero\Framework\Commands\Command;
+use App\Commands\Concerns\ResolvesOrganization;
 use App\Commands\Concerns\GeneratesSiteInfo;
 use App\Commands\Concerns\GeneratesDatabaseInfo;
+use Laravel\Forge\Exceptions\ForbiddenException;
+use Laravel\Forge\Exceptions\NotFoundException;
 use Laravel\Forge\Resources\Server;
 use Laravel\Forge\Resources\Site;
+use LaravelZero\Framework\Commands\Command;
 
 class DestroyCommand extends Command
 {
     use HandlesOutput;
     use InteractsWithEnv;
+    use ResolvesOrganization;
     use GeneratesDatabaseInfo;
     use GeneratesSiteInfo;
 
     protected $signature = 'destroy
         {--token=  : The Forge API token.}
+        {--org= : The slug of the Forge organization. Required for API v2 (or set FORGE_ORG).}
         {--server= : The ID of the target server.}
         {--repo= : The name of the repository being deployed.}
         {--branch= : The name of the branch being deployed.}
@@ -32,12 +37,23 @@ class DestroyCommand extends Command
 
     protected Forge $forge;
 
+    protected string $org;
+
     public function handle(Forge $forge)
     {
         $this->forge = $forge->setApiKey($this->getForgeToken());
 
+        if (! $org = $this->getOrganization()) {
+            return $this->bail('The --org option (or FORGE_ORG environment variable) is required.' . $this->availableOrganizationsHint());
+        }
+
+        $this->org = $org;
+        $serverId = (int) $this->getForgeServer();
+
         try {
-            $server = $forge->server($this->getForgeServer());
+            $server = $this->forge->server($this->org, $serverId);
+        } catch (NotFoundException | ForbiddenException $_) {
+            return $this->bail("Failed to find server {$serverId} in organization '{$this->org}'." . $this->availableOrganizationsHint());
         } catch (Exception $_) {
             return $this->bail("Failed to find server.");
         }
@@ -59,52 +75,80 @@ class DestroyCommand extends Command
 
             $this->information('Executing: ' . $command);
 
-            $this->forge->executeSiteCommand($server->id, $site->id, [
+            $this->forge->createCommand($this->org, $server->id, $site->id, [
                 'command' => $command,
             ]);
         }
 
-        foreach ($forge->certificates($server->id, $site->id) as $certificate) {
-            if ($certificate->domain === $this->generateSiteDomain()) {
-                $this->information('Deleting SSL certificate.');
-                $certificate->delete();
-            }
-        }
+        $this->deleteCertificates($server, $site);
 
-        foreach ($forge->jobs($server->id) as $job) {
+        foreach ($this->forge->scheduledJobs($this->org, $server->id)->lazy() as $job) {
             if ($job->command === sprintf("php /home/forge/%s/artisan schedule:run", $this->generateSiteDomain())) {
                 $this->information('Removing scheduled command.');
-                $job->delete();
+                $this->forge->deleteScheduledJob($this->org, $server->id, $job->id);
             }
         }
 
-        foreach ($forge->databases($server->id) as $database) {
+        foreach ($this->forge->databases($this->org, $server->id)->lazy() as $database) {
             if ($database->name === $this->getDatabaseName()) {
                 $this->information('Removing database.');
-                $database->delete();
+                $this->forge->deleteDatabase($this->org, $server->id, $database->id);
             }
         }
 
-        foreach ($forge->databaseUsers($server->id) as $databaseUser) {
+        foreach ($this->forge->databaseUsers($this->org, $server->id)->lazy() as $databaseUser) {
             if ($databaseUser->name === $this->getDatabaseUserName()) {
                 $this->information('Removing database user.');
-                $database->delete();
+                $this->forge->deleteDatabaseUser($this->org, $server->id, $databaseUser->id);
             }
         }
 
         $this->information('Deleting site.');
 
-        $site->delete();
+        $this->forge->deleteSite($this->org, $server->id, $site->id);
 
         $this->success('All done!');
     }
 
-    protected function findSite(Server $server): ?Site
+    /**
+     * Delete the Let's Encrypt certificate(s) for the site's primary domain.
+     *
+     * Certificates are per-domain in API v2 (the Certificate resource no longer
+     * carries a `domain` or a `delete()` method), so we resolve the domain record
+     * first and delete its certificates by id.
+     */
+    protected function deleteCertificates(Server $server, Site $site): void
     {
-        $sites = $this->forge->sites($server->id);
+        $domainId = $this->findPrimaryDomainId($server, $site);
+
+        if ($domainId === null) {
+            return;
+        }
+
+        foreach ($this->forge->domainCertificates($this->org, $server->id, $site->id, $domainId)->lazy() as $certificate) {
+            $this->information('Deleting SSL certificate.');
+            $this->forge->deleteCertificate($this->org, $server->id, $site->id, $domainId, $certificate->id);
+        }
+    }
+
+    protected function findPrimaryDomainId(Server $server, Site $site): ?int
+    {
         $domain = $this->generateSiteDomain();
 
-        foreach ($sites as $site) {
+        foreach ($this->forge->domains($this->org, $server->id, $site->id)->lazy() as $siteDomain) {
+            if ($siteDomain->name === $domain) {
+                return $siteDomain->id;
+            }
+        }
+
+        return null;
+    }
+
+    protected function findSite(Server $server): ?Site
+    {
+        $domain = $this->generateSiteDomain();
+
+        foreach ($this->forge->serverSites($this->org, $server->id)->lazy() as $site) {
             if ($site->name === $domain) {
                 return $site;
             }
