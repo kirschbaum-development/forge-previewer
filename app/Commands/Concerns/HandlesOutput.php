@@ -17,6 +17,22 @@ trait HandlesOutput
      */
     protected function bailValidation(array $errors): int
     {
+        $lines = $this->flattenValidationMessages($errors);
+
+        $detail = $lines === [] ? '' : ' ' . implode(' | ', $lines);
+
+        return $this->bail('Forge rejected the request (422 validation error).' . $detail);
+    }
+
+    /**
+     * Flatten a Forge 422 body (['message' => ..., 'errors' => ['field' => ['msg']]])
+     * into a de-duplicated list of message strings.
+     *
+     * @param  array<mixed>  $errors
+     * @return array<int, string>
+     */
+    protected function flattenValidationMessages(array $errors): array
+    {
         $bag = isset($errors['errors']) && is_array($errors['errors'])
             ? $errors['errors']
             : $errors;
@@ -29,9 +45,7 @@ trait HandlesOutput
             }
         });
 
-        $detail = $lines === [] ? '' : ' ' . implode(' | ', array_unique($lines));
-
-        return $this->bail('Forge rejected the request (422 validation error).' . $detail);
+        return array_values(array_unique($lines));
     }
 
     protected function bail(string $message): int

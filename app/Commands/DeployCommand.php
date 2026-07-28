@@ -237,12 +237,10 @@ class DeployCommand extends Command
 
         $this->maybeOutput('domain', $domain);
 
-        foreach ($this->forge->serverSites($this->org, $server->id)->lazy() as $site) {
-            if ($site->name === $domain) {
-                $this->information('Found existing site.');
+        if ($site = $this->findSiteByName($server, $domain)) {
+            $this->information('Found existing site.');
 
-                return $site;
-            }
+            return $site;
         }
 
         $this->information('Creating site with domain ' . $domain);
@@ -278,7 +276,19 @@ class DeployCommand extends Command
             $data['nginx_template_id'] = (int) $this->option('nginx-template');
         }
 
-        $site = $this->forge->createSite($this->org, $server->id, $data);
+        try {
+            $site = $this->forge->createSite($this->org, $server->id, $data);
+        } catch (ValidationException $exception) {
+            // Forge can report the domain as "already added" even when our scan
+            // above didn't see the site (e.g. a prior partial/failed create).
+            // Reuse the existing site and continue provisioning it rather than
+            // bailing and leaving it half-configured.
+            if (! $this->domainAlreadyTaken($exception) || ! ($site = $this->findSiteByName($server, $domain))) {
+                throw $exception;
+            }
+
+            $this->information('A site for this domain already exists; reusing it and continuing setup.');
+        }
 
         foreach ($this->option('setup-command') as $i => $command) {
             if ($i === 0) {
@@ -323,13 +333,40 @@ class DeployCommand extends Command
             $this->information('Requesting a wildcard certificate via DNS (dns-01). Ensure your DNS provider credentials are configured in Forge — --route-53-key/--route-53-secret are no longer sent to the Forge API v2.');
         }
 
-        $this->forge->createCertificate($this->org, $server->id, $site->id, $domainId, [
-            'type' => 'letsencrypt',
-            'letsencrypt' => [
-                'verification_method' => $this->option('wildcard') ? 'dns-01' : 'http-01',
-                'key_type' => 'ecdsa',
-            ],
-        ]);
+        try {
+            $this->forge->createCertificate($this->org, $server->id, $site->id, $domainId, [
+                'type' => 'letsencrypt',
+                'letsencrypt' => [
+                    'verification_method' => $this->option('wildcard') ? 'dns-01' : 'http-01',
+                    'key_type' => 'ecdsa',
+                ],
+            ]);
+        } catch (ValidationException $exception) {
+            // A reused site may already have a certificate; don't fail the deploy over it.
+            $this->information('Skipping SSL certificate: ' . implode(' | ', $this->flattenValidationMessages($exception->errors())));
+        }
+    }
+
+    protected function findSiteByName(Server $server, string $domain): ?Site
+    {
+        foreach ($this->forge->serverSites($this->org, $server->id)->lazy() as $site) {
+            if ($site->name === $domain) {
+                return $site;
+            }
+        }
+
+        return null;
+    }
+
+    protected function domainAlreadyTaken(ValidationException $exception): bool
+    {
+        foreach ($this->flattenValidationMessages($exception->errors()) as $message) {
+            if (str_contains(strtolower($message), 'already been added')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected function findPrimaryDomainId(Server $server, Site $site, string $domain): ?int
