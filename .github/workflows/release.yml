@@ -35,6 +35,15 @@ jobs:
       - name: Install dependencies (production)
         run: composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
 
+      - name: Stamp release version
+        # config/app.php resolves the version via app('git.version'), which shells
+        # out to `git describe` at boot. Inside a PHAR the working directory is a
+        # phar:// path, so proc_open() fails and the packaged artifact cannot boot.
+        # Bake the tag in as a literal so the binary never shells out to git.
+        run: |
+          sed -i "s|app('git.version')|'${GITHUB_REF_NAME}'|" config/app.php
+          grep "'version'" config/app.php
+
       - name: Install Box
         run: |
           composer global require humbug/box:^4.6 --no-interaction
