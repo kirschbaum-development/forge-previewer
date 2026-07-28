@@ -84,21 +84,21 @@ class DestroyCommand extends Command
 
             $this->deleteCertificates($server, $site);
 
-            foreach ($this->forge->scheduledJobs($this->org, $server->id)->lazy() as $job) {
+            foreach ($this->safelyIterate(fn () => $this->forge->scheduledJobs($this->org, $server->id)) as $job) {
                 if ($job->command === sprintf("php /home/forge/%s/artisan schedule:run", $this->generateSiteDomain())) {
                     $this->information('Removing scheduled command.');
                     $this->forge->deleteScheduledJob($this->org, $server->id, $job->id);
                 }
             }
 
-            foreach ($this->forge->databases($this->org, $server->id)->lazy() as $database) {
+            foreach ($this->safelyIterate(fn () => $this->forge->databases($this->org, $server->id)) as $database) {
                 if ($database->name === $this->getDatabaseName()) {
                     $this->information('Removing database.');
                     $this->forge->deleteDatabase($this->org, $server->id, $database->id);
                 }
             }
 
-            foreach ($this->forge->databaseUsers($this->org, $server->id)->lazy() as $databaseUser) {
+            foreach ($this->safelyIterate(fn () => $this->forge->databaseUsers($this->org, $server->id)) as $databaseUser) {
                 if ($databaseUser->name === $this->getDatabaseUserName()) {
                     $this->information('Removing database user.');
                     $this->forge->deleteDatabaseUser($this->org, $server->id, $databaseUser->id);
@@ -130,7 +130,7 @@ class DestroyCommand extends Command
             return;
         }
 
-        foreach ($this->forge->domainCertificates($this->org, $server->id, $site->id, $domainId)->lazy() as $certificate) {
+        foreach ($this->safelyIterate(fn () => $this->forge->domainCertificates($this->org, $server->id, $site->id, $domainId)) as $certificate) {
             $this->information('Deleting SSL certificate.');
             $this->forge->deleteCertificate($this->org, $server->id, $site->id, $domainId, $certificate->id);
         }
@@ -140,13 +140,27 @@ class DestroyCommand extends Command
     {
         $domain = $this->generateSiteDomain();
 
-        foreach ($this->forge->domains($this->org, $server->id, $site->id)->lazy() as $siteDomain) {
+        foreach ($this->safelyIterate(fn () => $this->forge->domains($this->org, $server->id, $site->id)) as $siteDomain) {
             if ($siteDomain->name === $domain) {
                 return $siteDomain->id;
             }
         }
 
         return null;
+    }
+
+    /**
+     * Iterate a paginated Forge collection, treating a 404 — a resource type not
+     * present on this server (e.g. no managed databases) — as an empty result
+     * rather than a fatal error, so cleanup of other resources can continue.
+     */
+    protected function safelyIterate(\Closure $fetch): iterable
+    {
+        try {
+            return $fetch()->lazy();
+        } catch (NotFoundException $_) {
+            return [];
+        }
     }
 
     protected function findSite(Server $server): ?Site
