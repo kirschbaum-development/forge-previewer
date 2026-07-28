@@ -320,7 +320,12 @@ class DeployCommand extends Command
             'source_control_provider' => $this->option('provider'),
             'repository' => $this->getRepoName(),
             'branch' => $this->getBranchName(),
-            'install_composer_dependencies' => true,
+            // Don't let Forge run composer during site creation: we always run a
+            // deployment right after (which installs dependencies), so this is
+            // redundant work — and Forge's creation-time install runs in parallel,
+            // which on servers prone to composer's download race wedges the install
+            // and blocks our deployment.
+            'install_composer_dependencies' => false,
             'push_to_deploy' => false,
         ];
 
