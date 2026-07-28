@@ -327,6 +327,7 @@ class DeployCommand extends Command
             'type' => 'letsencrypt',
             'letsencrypt' => [
                 'verification_method' => $this->option('wildcard') ? 'dns-01' : 'http-01',
+                'key_type' => 'ecdsa',
             ],
         ]);
     }
