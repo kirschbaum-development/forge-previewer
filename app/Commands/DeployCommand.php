@@ -11,6 +11,7 @@ use Laravel\Forge\Forge;
 use Illuminate\Support\Str;
 use Laravel\Forge\Exceptions\ForbiddenException;
 use Laravel\Forge\Exceptions\NotFoundException;
+use Laravel\Forge\Exceptions\ValidationException;
 use Laravel\Forge\Resources\Site;
 use Laravel\Forge\Resources\Server;
 use App\Commands\Concerns\HandlesOutput;
@@ -80,53 +81,57 @@ class DeployCommand extends Command
             return $this->bail("Failed to find server. Exception: " . $exception->getMessage());
         }
 
-        $site = $this->findOrCreateSite($server);
+        try {
+            $site = $this->findOrCreateSite($server);
 
-        if ($this->option('deployment-script')) {
-            $this->information('Updating deployment script');
+            if ($this->option('deployment-script')) {
+                $this->information('Updating deployment script');
 
-            $deploymentScript = str_contains($this->option('deployment-script'), '@')
-                ? file_get_contents(str_replace('@', '', $this->option('deployment-script')))
-                : $this->option('deployment-script');
+                $deploymentScript = str_contains($this->option('deployment-script'), '@')
+                    ? file_get_contents(str_replace('@', '', $this->option('deployment-script')))
+                    : $this->option('deployment-script');
 
-            $this->forge->updateDeploymentScript($this->org, $server->id, $site->id, [
-                'content' => $this->replaceVariables($deploymentScript),
-            ]);
-        }
-
-        if (! $this->option('no-db')) {
-            $this->maybeCreateDatabase($server, $site);
-        }
-
-        if (!empty($this->getEnvOverrides())) {
-            $this->information('Updating environment variables');
-
-            $envSource = $this->forge->siteEnvironment($this->org, $server->id, $site->id);
-
-            foreach ($this->getEnvOverrides() as $env) {
-                [$key, $value] = explode(':', $env, 2);
-
-                $envSource = $this->updateEnvVariable($key, $value, $envSource);
+                $this->forge->updateDeploymentScript($this->org, $server->id, $site->id, [
+                    'content' => $this->replaceVariables($deploymentScript),
+                ]);
             }
 
-            $this->forge->updateSiteEnvironment($this->org, $server->id, $site->id, $envSource);
-        }
-
-        $this->information('Deploying');
-
-        $this->forge->createDeployment($this->org, $server->id, $site->id);
-
-        foreach ($this->option('command') as $i => $command) {
-            if ($i === 0) {
-                $this->information('Executing site command(s)');
+            if (! $this->option('no-db')) {
+                $this->maybeCreateDatabase($server, $site);
             }
 
-            $this->forge->createCommand($this->org, $server->id, $site->id, [
-                'command' => $command,
-            ]);
-        }
+            if (!empty($this->getEnvOverrides())) {
+                $this->information('Updating environment variables');
 
-        $this->maybeCreateScheduledJob($server);
+                $envSource = $this->forge->siteEnvironment($this->org, $server->id, $site->id);
+
+                foreach ($this->getEnvOverrides() as $env) {
+                    [$key, $value] = explode(':', $env, 2);
+
+                    $envSource = $this->updateEnvVariable($key, $value, $envSource);
+                }
+
+                $this->forge->updateSiteEnvironment($this->org, $server->id, $site->id, $envSource);
+            }
+
+            $this->information('Deploying');
+
+            $this->forge->createDeployment($this->org, $server->id, $site->id);
+
+            foreach ($this->option('command') as $i => $command) {
+                if ($i === 0) {
+                    $this->information('Executing site command(s)');
+                }
+
+                $this->forge->createCommand($this->org, $server->id, $site->id, [
+                    'command' => $command,
+                ]);
+            }
+
+            $this->maybeCreateScheduledJob($server);
+        } catch (ValidationException $exception) {
+            return $this->bailValidation($exception->errors());
+        }
     }
 
     protected function updateEnvVariable(string $name, string $value, string $source): string
@@ -249,6 +254,7 @@ class DeployCommand extends Command
             'type' => 'laravel',
             'domain_mode' => 'custom',
             'name' => $domain,
+            'www_redirect_type' => 'none',
             'php_version' => $this->option('php-version'),
             'web_directory' => '/public',
             'allow_wildcard_subdomains' => (bool) $this->option('wildcard'),

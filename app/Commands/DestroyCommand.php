@@ -12,6 +12,7 @@ use App\Commands\Concerns\GeneratesSiteInfo;
 use App\Commands\Concerns\GeneratesDatabaseInfo;
 use Laravel\Forge\Exceptions\ForbiddenException;
 use Laravel\Forge\Exceptions\NotFoundException;
+use Laravel\Forge\Exceptions\ValidationException;
 use Laravel\Forge\Resources\Server;
 use Laravel\Forge\Resources\Site;
 use LaravelZero\Framework\Commands\Command;
@@ -66,46 +67,50 @@ class DestroyCommand extends Command
 
         $this->information('Found site.');
 
-        foreach ($this->option('pre-destroy-command') as $i => $command) {
-            if ($i === 0) {
-                $this->information('Executing pre-destroy command(s)');
+        try {
+            foreach ($this->option('pre-destroy-command') as $i => $command) {
+                if ($i === 0) {
+                    $this->information('Executing pre-destroy command(s)');
+                }
+
+                $command = $this->replaceVariables($command);
+
+                $this->information('Executing: ' . $command);
+
+                $this->forge->createCommand($this->org, $server->id, $site->id, [
+                    'command' => $command,
+                ]);
             }
 
-            $command = $this->replaceVariables($command);
+            $this->deleteCertificates($server, $site);
 
-            $this->information('Executing: ' . $command);
-
-            $this->forge->createCommand($this->org, $server->id, $site->id, [
-                'command' => $command,
-            ]);
-        }
-
-        $this->deleteCertificates($server, $site);
-
-        foreach ($this->forge->scheduledJobs($this->org, $server->id)->lazy() as $job) {
-            if ($job->command === sprintf("php /home/forge/%s/artisan schedule:run", $this->generateSiteDomain())) {
-                $this->information('Removing scheduled command.');
-                $this->forge->deleteScheduledJob($this->org, $server->id, $job->id);
+            foreach ($this->forge->scheduledJobs($this->org, $server->id)->lazy() as $job) {
+                if ($job->command === sprintf("php /home/forge/%s/artisan schedule:run", $this->generateSiteDomain())) {
+                    $this->information('Removing scheduled command.');
+                    $this->forge->deleteScheduledJob($this->org, $server->id, $job->id);
+                }
             }
-        }
 
-        foreach ($this->forge->databases($this->org, $server->id)->lazy() as $database) {
-            if ($database->name === $this->getDatabaseName()) {
-                $this->information('Removing database.');
-                $this->forge->deleteDatabase($this->org, $server->id, $database->id);
+            foreach ($this->forge->databases($this->org, $server->id)->lazy() as $database) {
+                if ($database->name === $this->getDatabaseName()) {
+                    $this->information('Removing database.');
+                    $this->forge->deleteDatabase($this->org, $server->id, $database->id);
+                }
             }
-        }
 
-        foreach ($this->forge->databaseUsers($this->org, $server->id)->lazy() as $databaseUser) {
-            if ($databaseUser->name === $this->getDatabaseUserName()) {
-                $this->information('Removing database user.');
-                $this->forge->deleteDatabaseUser($this->org, $server->id, $databaseUser->id);
+            foreach ($this->forge->databaseUsers($this->org, $server->id)->lazy() as $databaseUser) {
+                if ($databaseUser->name === $this->getDatabaseUserName()) {
+                    $this->information('Removing database user.');
+                    $this->forge->deleteDatabaseUser($this->org, $server->id, $databaseUser->id);
+                }
             }
+
+            $this->information('Deleting site.');
+
+            $this->forge->deleteSite($this->org, $server->id, $site->id);
+        } catch (ValidationException $exception) {
+            return $this->bailValidation($exception->errors());
         }
-
-        $this->information('Deleting site.');
-
-        $this->forge->deleteSite($this->org, $server->id, $site->id);
 
         $this->success('All done!');
     }

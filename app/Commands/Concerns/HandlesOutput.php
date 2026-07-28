@@ -6,6 +6,28 @@ use function Termwind\render;
 
 trait HandlesOutput
 {
+    /**
+     * Render the field-level errors from a Forge 422 response and fail.
+     *
+     * @param  array<string, array<int, string>|string>  $errors
+     */
+    protected function bailValidation(array $errors): int
+    {
+        $lines = [];
+
+        foreach ($errors as $field => $messages) {
+            foreach ((array) $messages as $message) {
+                $lines[] = is_string($field) && ! is_numeric($field)
+                    ? "{$field}: {$message}"
+                    : $message;
+            }
+        }
+
+        $detail = $lines === [] ? '' : ' ' . implode(' | ', $lines);
+
+        return $this->bail('Forge rejected the request (422 validation error).' . $detail);
+    }
+
     protected function bail(string $message): int
     {
         render(sprintf(<<<'html'
