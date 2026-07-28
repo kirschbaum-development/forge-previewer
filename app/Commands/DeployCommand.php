@@ -59,6 +59,8 @@ class DeployCommand extends Command
 
     protected string $org;
 
+    protected bool $createdSite = false;
+
     public function handle(Forge $forge)
     {
         $this->validateOptions();
@@ -119,6 +121,15 @@ class DeployCommand extends Command
             $this->information('Deploying');
 
             $this->forge->createDeployment($this->org, $server->id, $site->id);
+
+            // Now that the site is deployed with the correct script + environment,
+            // turn on push-to-deploy so future pushes to the branch auto-deploy.
+            // (Deferred from site creation to avoid a premature default-script deploy.)
+            if ($this->createdSite && ! $this->option('no-quick-deploy')) {
+                $this->information('Enabling push-to-deploy');
+
+                $this->forge->enablePushToDeploy($this->org, $server->id, $site->id, []);
+            }
 
             foreach ($this->option('command') as $i => $command) {
                 if ($i === 0) {
@@ -288,9 +299,16 @@ class DeployCommand extends Command
 
         $this->information('Creating site with domain ' . $domain);
 
-        // The repository install (source_control_provider/repository/branch) and
-        // quick-deploy (push_to_deploy) are folded into site creation on API v2 —
-        // the standalone installGitRepository()/enableQuickDeploy() calls are gone.
+        $this->createdSite = true;
+
+        // The repository install (source_control_provider/repository/branch) is
+        // folded into site creation on API v2 (installGitRepository() is gone).
+        //
+        // push_to_deploy is intentionally left OFF here: enabling it at creation
+        // makes Forge auto-deploy the moment the repo finishes cloning — before we
+        // set the deployment script or environment — running Forge's default
+        // script and racing/blocking our own deployment. We enable it after the
+        // first explicit deployment instead (see handle()).
         $data = [
             'type' => 'laravel',
             'domain_mode' => 'custom',
@@ -303,7 +321,7 @@ class DeployCommand extends Command
             'repository' => $this->getRepoName(),
             'branch' => $this->getBranchName(),
             'install_composer_dependencies' => true,
-            'push_to_deploy' => ! $this->option('no-quick-deploy'),
+            'push_to_deploy' => false,
         ];
 
         if ($this->option('isolate')) {
