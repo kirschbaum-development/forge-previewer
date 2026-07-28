@@ -356,6 +356,12 @@ class DeployCommand extends Command
             $this->information('A site for this domain already exists; reusing it and continuing setup.');
         }
 
+        // Site creation (repo clone + directory setup) is asynchronous. Wait for it
+        // to finish before running commands/certs/deployments — otherwise those race
+        // the install and fail (e.g. the deploy script's `cd <site dir>` runs before
+        // the directory exists).
+        $this->waitForSiteInstalled($site);
+
         foreach ($this->option('setup-command') as $i => $command) {
             if ($i === 0) {
                 $this->information('Executing set up command(s)');
@@ -422,6 +428,33 @@ class DeployCommand extends Command
         }
 
         return null;
+    }
+
+    /**
+     * Block until a freshly-created site has finished installing (repo clone +
+     * directory setup). Forge's SiteStatus is "creating"/"installing" while in
+     * progress; anything else (installed/never-deployed/deployed/…) is ready.
+     */
+    protected function waitForSiteInstalled(Site $site): void
+    {
+        $inProgress = ['creating', 'installing'];
+        $deadline = time() + max((int) ($this->option('timeout') ?? config('app.timeout')), 120);
+
+        while (time() < $deadline) {
+            try {
+                $status = $this->forge->organizationSite($this->org, $site->id)->status;
+            } catch (\Throwable $_) {
+                sleep(5);
+                continue;
+            }
+
+            if (! in_array($status, $inProgress, true)) {
+                return;
+            }
+
+            $this->information("Waiting for the site to finish installing (status: {$status})...");
+            sleep(8);
+        }
     }
 
     protected function domainAlreadyTaken(ValidationException $exception): bool
