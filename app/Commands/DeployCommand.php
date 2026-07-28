@@ -103,15 +103,17 @@ class DeployCommand extends Command
             if (!empty($this->getEnvOverrides())) {
                 $this->information('Updating environment variables');
 
-                $envSource = $this->forge->siteEnvironment($this->org, $server->id, $site->id);
+                $this->withProvisioningRetry(function () use ($server, $site) {
+                    $envSource = $this->forge->siteEnvironment($this->org, $server->id, $site->id);
 
-                foreach ($this->getEnvOverrides() as $env) {
-                    [$key, $value] = explode(':', $env, 2);
+                    foreach ($this->getEnvOverrides() as $env) {
+                        [$key, $value] = explode(':', $env, 2);
 
-                    $envSource = $this->updateEnvVariable($key, $value, $envSource);
-                }
+                        $envSource = $this->updateEnvVariable($key, $value, $envSource);
+                    }
 
-                $this->forge->updateSiteEnvironment($this->org, $server->id, $site->id, $envSource);
+                    $this->forge->updateSiteEnvironment($this->org, $server->id, $site->id, $envSource);
+                });
             }
 
             $this->information('Deploying');
@@ -199,18 +201,59 @@ class DeployCommand extends Command
 
         $this->information('Updating site environment variables');
 
-        $env = $this->forge->siteEnvironment($this->org, $server->id, $site->id);
-        $env = preg_replace([
-            "/DB_DATABASE=.*/",
-            "/DB_USERNAME=.*/",
-            "/DB_PASSWORD=.*/",
-        ], [
-            "DB_DATABASE={$this->getDatabaseName()}",
-            "DB_USERNAME={$this->getDatabaseUserName()}",
-            "DB_PASSWORD={$this->getDatabasePassword()}"
-        ], $env);
+        $this->withProvisioningRetry(function () use ($server, $site) {
+            $env = $this->forge->siteEnvironment($this->org, $server->id, $site->id);
+            $env = preg_replace([
+                "/DB_DATABASE=.*/",
+                "/DB_USERNAME=.*/",
+                "/DB_PASSWORD=.*/",
+            ], [
+                "DB_DATABASE={$this->getDatabaseName()}",
+                "DB_USERNAME={$this->getDatabaseUserName()}",
+                "DB_PASSWORD={$this->getDatabasePassword()}"
+            ], $env);
 
-        $this->forge->updateSiteEnvironment($this->org, $server->id, $site->id, $env);
+            $this->forge->updateSiteEnvironment($this->org, $server->id, $site->id, $env);
+        });
+    }
+
+    /**
+     * Retry an operation while Forge reports the site is still provisioning.
+     *
+     * A freshly created site can't have its .env written for ~60s; Forge returns
+     * a 422 telling us to wait. Retry (bounded by --timeout) until it succeeds.
+     */
+    protected function withProvisioningRetry(\Closure $callback)
+    {
+        $deadline = time() + max((int) ($this->option('timeout') ?? config('app.timeout')), 90);
+
+        while (true) {
+            try {
+                return $callback();
+            } catch (ValidationException $exception) {
+                if (time() >= $deadline || ! $this->siteStillProvisioning($exception)) {
+                    throw $exception;
+                }
+
+                $this->information('Site is still provisioning; waiting 15s before retrying...');
+                sleep(15);
+            }
+        }
+    }
+
+    protected function siteStillProvisioning(ValidationException $exception): bool
+    {
+        foreach ($this->flattenValidationMessages($exception->errors()) as $message) {
+            $message = strtolower($message);
+
+            if (str_contains($message, 'recently created')
+                || str_contains($message, 'please wait')
+                || str_contains($message, 'could not be updated')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected function maybeOutput(string $key, string $value): void
