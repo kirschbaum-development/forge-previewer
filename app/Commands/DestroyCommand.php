@@ -5,6 +5,7 @@ namespace App\Commands;
 use Exception;
 use Illuminate\Support\Str;
 use Laravel\Forge\Forge;
+use App\Commands\Concerns\FindsSiteResources;
 use App\Commands\Concerns\HandlesOutput;
 use App\Commands\Concerns\InteractsWithEnv;
 use App\Commands\Concerns\ResolvesOrganization;
@@ -19,6 +20,7 @@ use LaravelZero\Framework\Commands\Command;
 
 class DestroyCommand extends Command
 {
+    use FindsSiteResources;
     use HandlesOutput;
     use InteractsWithEnv;
     use ResolvesOrganization;
@@ -59,7 +61,7 @@ class DestroyCommand extends Command
             return $this->bail("Failed to find server.");
         }
 
-        $site = $this->findSite($server);
+        $site = $this->findSiteByName($server, $this->generateSiteDomain());
 
         if (! $site) {
             return $this->bail('Failed to find site.');
@@ -124,7 +126,7 @@ class DestroyCommand extends Command
      */
     protected function deleteCertificates(Server $server, Site $site): void
     {
-        $domainId = $this->findPrimaryDomainId($server, $site);
+        $domainId = $this->findPrimaryDomainId($server, $site, $this->generateSiteDomain());
 
         if ($domainId === null) {
             return;
@@ -134,46 +136,6 @@ class DestroyCommand extends Command
             $this->information('Deleting SSL certificate.');
             $this->forge->deleteCertificate($this->org, $server->id, $site->id, $domainId, $certificate->id);
         }
-    }
-
-    protected function findPrimaryDomainId(Server $server, Site $site): ?int
-    {
-        $domain = $this->generateSiteDomain();
-
-        foreach ($this->safelyIterate(fn () => $this->forge->domains($this->org, $server->id, $site->id)) as $siteDomain) {
-            if ($siteDomain->name === $domain) {
-                return $siteDomain->id;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Iterate a paginated Forge collection, treating a 404 — a resource type not
-     * present on this server (e.g. no managed databases) — as an empty result
-     * rather than a fatal error, so cleanup of other resources can continue.
-     */
-    protected function safelyIterate(\Closure $fetch): iterable
-    {
-        try {
-            return $fetch()->lazy();
-        } catch (NotFoundException $_) {
-            return [];
-        }
-    }
-
-    protected function findSite(Server $server): ?Site
-    {
-        $domain = $this->generateSiteDomain();
-
-        foreach ($this->forge->serverSites($this->org, $server->id)->lazy() as $site) {
-            if ($site->name === $domain) {
-                return $site;
-            }
-        }
-
-        return null;
     }
 
     protected function replaceVariables(string $string): string
