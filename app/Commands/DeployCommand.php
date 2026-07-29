@@ -19,7 +19,6 @@ use Laravel\Forge\Resources\Server;
 use App\Commands\Concerns\HandlesOutput;
 use App\Commands\Concerns\InteractsWithEnv;
 use LaravelZero\Framework\Commands\Command;
-use Symfony\Component\Console\Exception\InvalidOptionException;
 
 class DeployCommand extends Command
 {
@@ -50,8 +49,8 @@ class DeployCommand extends Command
         {--no-deploy : Avoid deploying the site.}
         {--no-db : Avoid creating a database.}
         {--wildcard : Create a site with wildcard subdomains.}
-        {--route-53-key= : AWS Route 53 key for wildcard subdomains SSL certificate.}
-        {--route-53-secret= : AWS Route 53 secret for wildcard subdomains SSL certificate.}
+        {--route-53-key= : Deprecated; no longer sent to Forge. Configure DNS provider credentials in Forge.}
+        {--route-53-secret= : Deprecated; no longer sent to Forge. Configure DNS provider credentials in Forge.}
         {--nginx-template= : The nginx template ID to use on your Laravel Forge website.}
         {--timeout= : Change default timeout (120). In seconds.}
     ';
@@ -66,8 +65,6 @@ class DeployCommand extends Command
 
     public function handle(Forge $forge)
     {
-        $this->validateOptions();
-
         $this->forge = $forge->setApiKey($this->getForgeToken())
             ->setTimeout((int)($this->option('timeout') ?? config('app.timeout')));
 
@@ -504,18 +501,6 @@ class DeployCommand extends Command
         $domain = $this->generateSiteDomain();
 
         return str_replace(['{domain}', '{branch}', '{branch_snake_case}'], [$domain, $branch, Str::replace('-', '_', $branch)], $string);
-    }
-
-    /**
-     * @throws InvalidOptionException
-     */
-    protected function validateOptions(): void
-    {
-        if ($this->option('wildcard')) {
-            if (!$this->option('route-53-key') || !$this->option('route-53-secret')) {
-                throw new InvalidOptionException('--route-53-key and --route-53-secret options are required when site will have wildcard subdomains.');
-            }
-        }
     }
 
     protected function getEnvOverrides(): array

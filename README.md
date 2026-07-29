@@ -103,8 +103,8 @@ Options:
     --no-deploy                              Avoid deploying the site.
     --no-db                                  Avoid creating a database.
     --wildcard                               Create a site with wildcard subdomains.
-    --route-53-key[=ROUTE-53-KEY]            (Deprecated — see Wildcard subdomains below.)
-    --route-53-secret[=ROUTE-53-SECRET]      (Deprecated — see Wildcard subdomains below.)
+    --route-53-key[=ROUTE-53-KEY]            Deprecated; no longer sent to Forge. Configure DNS provider credentials in Forge.
+    --route-53-secret[=ROUTE-53-SECRET]      Deprecated; no longer sent to Forge. Configure DNS provider credentials in Forge.
     --nginx-template[=NGINX-TEMPLATE]        The nginx template ID to use on your Laravel Forge website.
     --timeout[=TIMEOUT]                      Change default timeout (120). In seconds.
 ```
