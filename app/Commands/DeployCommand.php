@@ -2,6 +2,7 @@
 
 namespace App\Commands;
 
+use App\Commands\Concerns\FindsSiteResources;
 use App\Commands\Concerns\GeneratesDatabaseInfo;
 use App\Commands\Concerns\GeneratesSiteInfo;
 use App\Commands\Concerns\ResolvesOrganization;
@@ -11,6 +12,7 @@ use Laravel\Forge\Forge;
 use Illuminate\Support\Str;
 use Laravel\Forge\Exceptions\ForbiddenException;
 use Laravel\Forge\Exceptions\NotFoundException;
+use Laravel\Forge\Exceptions\TimeoutException;
 use Laravel\Forge\Exceptions\ValidationException;
 use Laravel\Forge\Resources\Site;
 use Laravel\Forge\Resources\Server;
@@ -21,6 +23,7 @@ use Symfony\Component\Console\Exception\InvalidOptionException;
 
 class DeployCommand extends Command
 {
+    use FindsSiteResources;
     use HandlesOutput;
     use InteractsWithEnv;
     use ResolvesOrganization;
@@ -144,6 +147,8 @@ class DeployCommand extends Command
             $this->maybeCreateScheduledJob($server);
         } catch (ValidationException $exception) {
             return $this->bailValidation($exception->errors());
+        } catch (\RuntimeException $exception) {
+            return $this->bail($exception->getMessage());
         }
     }
 
@@ -168,7 +173,7 @@ class DeployCommand extends Command
 
         $command = $this->buildScheduledJobCommand();
 
-        foreach ($this->forge->scheduledJobs($this->org, $server->id)->lazy() as $job) {
+        foreach ($this->safelyIterate(fn () => $this->forge->scheduledJobs($this->org, $server->id)) as $job) {
             if ($job->command === $command) {
                 $this->information('Scheduler job already exists');
                 return;
@@ -193,7 +198,7 @@ class DeployCommand extends Command
     {
         $name = $this->getDatabaseName();
 
-        foreach ($this->forge->databases($this->org, $server->id)->lazy() as $database) {
+        foreach ($this->safelyIterate(fn () => $this->forge->databases($this->org, $server->id)) as $database) {
             if ($database->name === $name) {
                 $this->information('Database already exists.');
 
@@ -252,14 +257,19 @@ class DeployCommand extends Command
         }
     }
 
+    /**
+     * Matched against the 422 Forge returns while a fresh site is provisioning,
+     * observed live as: "The .env file could not be updated. If the site was
+     * recently created, please wait at least 60 seconds and try again."
+     * Match only the phrases specific to that provisioning race — anything more
+     * generic risks retrying a permanent validation error for the full timeout.
+     */
     protected function siteStillProvisioning(ValidationException $exception): bool
     {
         foreach ($this->flattenValidationMessages($exception->errors()) as $message) {
             $message = strtolower($message);
 
-            if (str_contains($message, 'recently created')
-                || str_contains($message, 'please wait')
-                || str_contains($message, 'could not be updated')) {
+            if (str_contains($message, 'recently created') || str_contains($message, 'please wait')) {
                 return true;
             }
         }
@@ -414,36 +424,50 @@ class DeployCommand extends Command
                 ],
             ]);
         } catch (ValidationException $exception) {
-            // A reused site may already have a certificate; don't fail the deploy over it.
-            $this->information('Skipping SSL certificate: ' . implode(' | ', $this->flattenValidationMessages($exception->errors())));
+            // A reused site may already have a certificate — tolerate only that
+            // case. Any other validation failure (unconfigured DNS provider for
+            // dns-01, invalid domain, rate limit, bad payload) must fail the
+            // deploy loudly rather than exit 0 without HTTPS.
+            if (! $this->certificateAlreadyExists($exception)) {
+                throw $exception;
+            }
+
+            $this->information('Skipping SSL certificate (already present): ' . implode(' | ', $this->flattenValidationMessages($exception->errors())));
         }
     }
 
-    protected function findSiteByName(Server $server, string $domain): ?Site
+    protected function certificateAlreadyExists(ValidationException $exception): bool
     {
-        foreach ($this->forge->serverSites($this->org, $server->id)->lazy() as $site) {
-            if ($site->name === $domain) {
-                return $site;
+        foreach ($this->flattenValidationMessages($exception->errors()) as $message) {
+            if (str_contains(strtolower($message), 'already')) {
+                return true;
             }
         }
 
-        return null;
+        return false;
     }
 
     /**
      * Block until a freshly-created site has finished installing (repo clone +
      * directory setup). Forge's SiteStatus is "creating"/"installing" while in
      * progress; anything else (installed/never-deployed/deployed/…) is ready.
+     *
+     * @throws \RuntimeException when the site is still installing at the deadline —
+     *         proceeding would race the install (the exact bug this wait prevents).
      */
     protected function waitForSiteInstalled(Site $site): void
     {
         $inProgress = ['creating', 'installing'];
         $deadline = time() + max((int) ($this->option('timeout') ?? config('app.timeout')), 120);
+        $status = 'unknown';
 
         while (time() < $deadline) {
             try {
                 $status = $this->forge->organizationSite($this->org, $site->id)->status;
-            } catch (\Throwable $_) {
+            } catch (NotFoundException | TimeoutException $_) {
+                // The site record can briefly 404 right after creation, and slow
+                // requests can time out — both transient. Anything else (auth,
+                // validation) is permanent and should surface immediately.
                 sleep(5);
                 continue;
             }
@@ -455,8 +479,14 @@ class DeployCommand extends Command
             $this->information("Waiting for the site to finish installing (status: {$status})...");
             sleep(8);
         }
+
+        throw new \RuntimeException("Timed out waiting for the site to finish installing (last status: {$status}). Increase --timeout or retry once the install completes.");
     }
 
+    /**
+     * Matched against the 422 observed live from createSite when the domain
+     * already exists: "That domain has already been added to a site on this server."
+     */
     protected function domainAlreadyTaken(ValidationException $exception): bool
     {
         foreach ($this->flattenValidationMessages($exception->errors()) as $message) {
@@ -466,17 +496,6 @@ class DeployCommand extends Command
         }
 
         return false;
-    }
-
-    protected function findPrimaryDomainId(Server $server, Site $site, string $domain): ?int
-    {
-        foreach ($this->forge->domains($this->org, $server->id, $site->id)->lazy() as $siteDomain) {
-            if ($siteDomain->name === $domain) {
-                return $siteDomain->id;
-            }
-        }
-
-        return null;
     }
 
     protected function replaceVariables(string $string): string
