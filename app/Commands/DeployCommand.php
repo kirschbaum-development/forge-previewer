@@ -6,6 +6,7 @@ use App\Commands\Concerns\FindsSiteResources;
 use App\Commands\Concerns\GeneratesDatabaseInfo;
 use App\Commands\Concerns\GeneratesSiteInfo;
 use App\Commands\Concerns\ResolvesOrganization;
+use App\Exceptions\ProvisioningFailedException;
 use Exception;
 use GuzzleHttp\Exception\ConnectException;
 use Illuminate\Support\Facades\File;
@@ -13,6 +14,7 @@ use Laravel\Forge\Forge;
 use Illuminate\Support\Str;
 use Laravel\Forge\Exceptions\ForbiddenException;
 use Laravel\Forge\Exceptions\NotFoundException;
+use Laravel\Forge\Exceptions\TimeoutException;
 use Laravel\Forge\Exceptions\ValidationException;
 use Laravel\Forge\Resources\Site;
 use Laravel\Forge\Resources\Server;
@@ -122,15 +124,17 @@ class DeployCommand extends Command
                 $this->information('Deploying');
 
                 $this->forge->createDeployment($this->org, $server->id, $site->id);
+            }
 
-                // Now that the site is deployed with the correct script + environment,
-                // turn on push-to-deploy so future pushes to the branch auto-deploy.
-                // (Deferred from site creation to avoid a premature default-script deploy.)
-                if ($this->createdSite && ! $this->option('no-quick-deploy')) {
-                    $this->information('Enabling push-to-deploy');
+            // Now that the site is configured with the correct script + environment,
+            // turn on push-to-deploy so future pushes to the branch auto-deploy.
+            // (Deferred from site creation to avoid a premature default-script deploy.
+            // Independent of --no-deploy, which only skips the immediate deployment —
+            // a site created with --no-deploy must not lose push-to-deploy forever.)
+            if ($this->createdSite && ! $this->option('no-quick-deploy')) {
+                $this->information('Enabling push-to-deploy');
 
-                    $this->forge->enablePushToDeploy($this->org, $server->id, $site->id, []);
-                }
+                $this->forge->enablePushToDeploy($this->org, $server->id, $site->id, []);
             }
 
             foreach ($this->option('command') as $i => $command) {
@@ -146,7 +150,9 @@ class DeployCommand extends Command
             $this->maybeCreateScheduledJob($server);
         } catch (ValidationException $exception) {
             return $this->bailValidation($exception->errors());
-        } catch (\RuntimeException $exception) {
+        } catch (TimeoutException $_) {
+            return $this->bail('Timed out waiting for Forge to finish provisioning a resource. Increase --timeout and retry.');
+        } catch (ProvisioningFailedException $exception) {
             return $this->bail($exception->getMessage());
         }
     }
@@ -188,7 +194,7 @@ class DeployCommand extends Command
                 'user' => 'forge',
             ]);
         } catch (NotFoundException $_) {
-            throw new \RuntimeException('Scheduled jobs are unavailable on this server. Rerun without --scheduler.');
+            throw new ProvisioningFailedException('Scheduled jobs are unavailable on this server. Rerun without --scheduler.');
         }
     }
 
@@ -219,7 +225,7 @@ class DeployCommand extends Command
                 'password' => $this->getDatabasePassword(),
             ]);
         } catch (NotFoundException $_) {
-            throw new \RuntimeException('Managed databases are unavailable on this server. Rerun with --no-db.');
+            throw new ProvisioningFailedException('Managed databases are unavailable on this server. Rerun with --no-db.');
         }
 
         $this->information('Updating site environment variables');
@@ -413,7 +419,7 @@ class DeployCommand extends Command
         $domainId = $this->findPrimaryDomainId($server, $site, $domain);
 
         if ($domainId === null) {
-            throw new \RuntimeException('Could not find the primary domain record for ' . $domain . '; unable to request its SSL certificate.');
+            throw new ProvisioningFailedException('Could not find the primary domain record for ' . $domain . '; unable to request its SSL certificate.');
         }
 
         if ($this->option('wildcard')) {
@@ -460,12 +466,17 @@ class DeployCommand extends Command
 
     /**
      * Block until a freshly-created site has finished installing (repo clone +
-     * directory setup). Only the explicit "installed" status is ready.
+     * directory setup). The SiteStatus enum is: installed, creating, removing,
+     * installing, uninstalling, deployed, never-deployed, deploying, failed,
+     * maintenance. Only creating/installing mean the install is still running —
+     * a reused site is typically already deployed/never-deployed, and waiting
+     * for a literal "installed" would spin until the deadline.
      *
-     * @throws \RuntimeException when installation fails or misses the deadline.
+     * @throws ProvisioningFailedException when installation fails or misses the deadline.
      */
     protected function waitForSiteInstalled(Site $site): void
     {
+        $inProgress = ['creating', 'installing'];
         $deadline = time() + max((int) ($this->option('timeout') ?? config('app.timeout')), 120);
         $status = 'unknown';
 
@@ -479,20 +490,19 @@ class DeployCommand extends Command
                 continue;
             }
 
-            if ($status === 'installed') {
+            if ($status === 'failed') {
+                throw new ProvisioningFailedException('Site installation failed (status: failed).');
+            }
+
+            if (! in_array($status, $inProgress, true)) {
                 return;
             }
 
-            if (in_array($status, ['failed', 'error'], true)) {
-                throw new \RuntimeException("Site installation failed (status: {$status}).");
-            }
-
-            $displayStatus = $status ?: 'unknown';
-            $this->information("Waiting for the site to finish installing (status: {$displayStatus})...");
+            $this->information("Waiting for the site to finish installing (status: {$status})...");
             sleep(8);
         }
 
-        throw new \RuntimeException("Timed out waiting for the site to finish installing (last status: {$status}). Increase --timeout or retry once the install completes.");
+        throw new ProvisioningFailedException("Timed out waiting for the site to finish installing (last status: {$status}). Increase --timeout or retry once the install completes.");
     }
 
     /**

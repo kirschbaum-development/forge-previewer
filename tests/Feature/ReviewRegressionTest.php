@@ -71,5 +71,5 @@ it('fails certificate setup when the primary domain cannot be resolved', functio
     $site = new Site(['id' => 20]);
 
     expect(fn () => reviewableDeployCommand(null)->requestCertificate($server, $site, 'preview.example.com'))
-        ->toThrow(RuntimeException::class, 'Could not find the primary domain record for preview.example.com');
+        ->toThrow(App\Exceptions\ProvisioningFailedException::class, 'Could not find the primary domain record for preview.example.com');
 });
