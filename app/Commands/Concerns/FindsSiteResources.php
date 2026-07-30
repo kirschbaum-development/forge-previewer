@@ -26,7 +26,7 @@ trait FindsSiteResources
 
     protected function findSiteByName(Server $server, string $domain): ?Site
     {
-        foreach ($this->forge->serverSites($this->org, $server->id)->lazy() as $site) {
+        foreach ($this->safelyIterate(fn () => $this->forge->serverSites($this->org, $server->id)) as $site) {
             if ($site->name === $domain) {
                 return $site;
             }
