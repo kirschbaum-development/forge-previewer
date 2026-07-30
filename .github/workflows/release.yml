@@ -170,7 +170,7 @@ jobs:
           name: release-binaries
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             forge-previewer-linux-x86_64
