@@ -90,29 +90,31 @@ class DestroyCommand extends Command
             foreach ($this->safelyIterate(fn () => $this->forge->scheduledJobs($this->org, $server->id)) as $job) {
                 if ($job->command === sprintf("php /home/forge/%s/artisan schedule:run", $this->generateSiteDomain())) {
                     $this->information('Removing scheduled command.');
-                    $this->forge->deleteScheduledJob($this->org, $server->id, $job->id);
+                    $this->ignoreMissing(fn () => $this->forge->deleteScheduledJob($this->org, $server->id, $job->id));
                 }
             }
 
             foreach ($this->safelyIterate(fn () => $this->forge->databases($this->org, $server->id)) as $database) {
                 if ($database->name === $this->getDatabaseName()) {
                     $this->information('Removing database.');
-                    $this->forge->deleteDatabase($this->org, $server->id, $database->id);
+                    $this->ignoreMissing(fn () => $this->forge->deleteDatabase($this->org, $server->id, $database->id));
                 }
             }
 
             foreach ($this->safelyIterate(fn () => $this->forge->databaseUsers($this->org, $server->id)) as $databaseUser) {
                 if ($databaseUser->name === $this->getDatabaseUserName()) {
                     $this->information('Removing database user.');
-                    $this->forge->deleteDatabaseUser($this->org, $server->id, $databaseUser->id);
+                    $this->ignoreMissing(fn () => $this->forge->deleteDatabaseUser($this->org, $server->id, $databaseUser->id));
                 }
             }
 
             $this->information('Deleting site.');
 
-            $this->forge->deleteSite($this->org, $server->id, $site->id);
+            $this->ignoreMissing(fn () => $this->forge->deleteSite($this->org, $server->id, $site->id));
         } catch (ValidationException $exception) {
             return $this->bailValidation($exception->errors());
+        } catch (NotFoundException $_) {
+            return $this->bail('A Forge resource disappeared mid-destroy (another cleanup may be running). Retry to verify everything is gone.');
         } catch (ProvisioningFailedException $exception) {
             return $this->bail($exception->getMessage());
         }
@@ -139,7 +141,20 @@ class DestroyCommand extends Command
 
         foreach ($this->safelyIterate(fn () => $this->forge->domainCertificates($this->org, $server->id, $site->id, $domainId)) as $certificate) {
             $this->information('Deleting SSL certificate.');
-            $this->forge->deleteCertificate($this->org, $server->id, $site->id, $domainId, $certificate->id);
+            $this->ignoreMissing(fn () => $this->forge->deleteCertificate($this->org, $server->id, $site->id, $domainId, $certificate->id));
+        }
+    }
+
+    /**
+     * Run a delete call, treating a 404 as already-removed: a retried destroy
+     * or concurrent cleanup may have deleted the resource after we listed it.
+     */
+    protected function ignoreMissing(\Closure $delete): void
+    {
+        try {
+            $delete();
+        } catch (NotFoundException $_) {
+            $this->information('Already removed.');
         }
     }
 
