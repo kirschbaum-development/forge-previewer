@@ -18,6 +18,7 @@ use Laravel\Forge\Exceptions\NotFoundException;
 use Laravel\Forge\Exceptions\RateLimitExceededException;
 use Laravel\Forge\Exceptions\TimeoutException;
 use Laravel\Forge\Exceptions\ValidationException;
+use Laravel\Forge\Resources\Deployment;
 use Laravel\Forge\Resources\Site;
 use Laravel\Forge\Resources\Server;
 use App\Commands\Concerns\HandlesOutput;
@@ -125,7 +126,14 @@ class DeployCommand extends Command
             if (! $this->option('no-deploy')) {
                 $this->information('Deploying');
 
-                $this->forge->createDeployment($this->org, $server->id, $site->id);
+                $deployment = $this->forge->createDeployment($this->org, $server->id, $site->id);
+
+                $this->waitForDeployment(
+                    $server,
+                    $site,
+                    $deployment,
+                    (int) ($this->option('timeout') ?? config('app.timeout')),
+                );
             }
 
             // Now that the site is configured with the correct script + environment,
@@ -166,6 +174,64 @@ class DeployCommand extends Command
         } catch (ProvisioningFailedException $exception) {
             return $this->bail($exception->getMessage());
         }
+    }
+
+    /**
+     * Block until the deployment created by this command reaches a terminal
+     * state. Waiting on the exact deployment ID prevents an older healthy
+     * release from making the preview look ready while the new release is
+     * still queued or running.
+     *
+     * @throws ProvisioningFailedException when deployment fails, is cancelled,
+     *                                     returns an unexpected status, or times out.
+     */
+    protected function waitForDeployment(
+        Server $server,
+        Site $site,
+        Deployment $deployment,
+        int $timeout,
+    ): void {
+        if ($deployment->id === null) {
+            throw new ProvisioningFailedException('Forge accepted the deployment but returned no deployment ID.');
+        }
+
+        $deadline = time() + max($timeout, 120);
+        $status = $deployment->status ?? 'unknown';
+
+        while (time() < $deadline) {
+            try {
+                $deployment = $this->forge->deployment(
+                    $this->org,
+                    $server->id,
+                    $site->id,
+                    $deployment->id,
+                );
+            } catch (NotFoundException | ConnectException $_) {
+                // The deployment can briefly be unavailable immediately after
+                // creation, and transient connection failures are safe to retry.
+                sleep(5);
+                continue;
+            }
+
+            $status = $deployment->status ?? 'unknown';
+
+            if ($status === 'finished') {
+                return;
+            }
+
+            if (in_array($status, ['cancelled', 'failed', 'failed-build'], true)) {
+                throw new ProvisioningFailedException("Deployment {$deployment->id} did not succeed (status: {$status}).");
+            }
+
+            if (! in_array($status, ['deploying', 'pending', 'queued'], true)) {
+                throw new ProvisioningFailedException("Deployment {$deployment->id} returned an unexpected status: {$status}.");
+            }
+
+            $this->information("Waiting for deployment {$deployment->id} to finish (status: {$status})...");
+            sleep(8);
+        }
+
+        throw new ProvisioningFailedException("Timed out waiting for deployment {$deployment->id} to finish (last status: {$status}). Increase --timeout and retry.");
     }
 
     protected function updateEnvVariable(string $name, string $value, string $source): string

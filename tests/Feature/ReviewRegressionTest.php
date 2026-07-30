@@ -1,10 +1,13 @@
 <?php
 
 use App\Commands\DeployCommand;
+use Laravel\Forge\Forge;
 use Laravel\Forge\Exceptions\NotFoundException;
 use Laravel\Forge\Exceptions\ValidationException;
+use Laravel\Forge\Resources\Deployment;
 use Laravel\Forge\Resources\Server;
 use Laravel\Forge\Resources\Site;
+use Mockery\MockInterface;
 
 function reviewableDeployCommand(?int $primaryDomainId = 1): DeployCommand
 {
@@ -28,6 +31,14 @@ function reviewableDeployCommand(?int $primaryDomainId = 1): DeployCommand
         public function requestCertificate(Server $server, Site $site, string $domain): void
         {
             $this->obtainCertificate($server, $site, $domain);
+        }
+
+        public function awaitDeployment(Forge $forge, Server $server, Site $site, Deployment $deployment): void
+        {
+            $this->forge = $forge;
+            $this->org = 'test-org';
+
+            $this->waitForDeployment($server, $site, $deployment, 120);
         }
 
         protected function findPrimaryDomainId(Server $server, Site $site, string $domain): ?int
@@ -73,3 +84,36 @@ it('fails certificate setup when the primary domain cannot be resolved', functio
     expect(fn () => reviewableDeployCommand(null)->requestCertificate($server, $site, 'preview.example.com'))
         ->toThrow(App\Exceptions\ProvisioningFailedException::class, 'Could not find the primary domain record for preview.example.com');
 });
+
+it('waits for the exact deployment created by the command', function () {
+    $server = new Server(['id' => 10]);
+    $site = new Site(['id' => 20]);
+    $deployment = new Deployment(['id' => 30, 'status' => 'pending']);
+    $forge = Mockery::mock(Forge::class, function (MockInterface $mock) {
+        $mock->shouldReceive('deployment')
+            ->once()
+            ->with('test-org', 10, 20, 30)
+            ->andReturn(new Deployment(['id' => 30, 'status' => 'finished']));
+    });
+
+    reviewableDeployCommand()->awaitDeployment($forge, $server, $site, $deployment);
+
+    expect(true)->toBeTrue();
+});
+
+it('fails when the exact deployment does not finish successfully', function (string $status) {
+    $server = new Server(['id' => 10]);
+    $site = new Site(['id' => 20]);
+    $deployment = new Deployment(['id' => 30, 'status' => 'pending']);
+    $forge = Mockery::mock(Forge::class, function (MockInterface $mock) use ($status) {
+        $mock->shouldReceive('deployment')
+            ->once()
+            ->andReturn(new Deployment(['id' => 30, 'status' => $status]));
+    });
+
+    expect(fn () => reviewableDeployCommand()->awaitDeployment($forge, $server, $site, $deployment))
+        ->toThrow(
+            App\Exceptions\ProvisioningFailedException::class,
+            "Deployment 30 did not succeed (status: {$status}).",
+        );
+})->with(['cancelled', 'failed', 'failed-build']);
