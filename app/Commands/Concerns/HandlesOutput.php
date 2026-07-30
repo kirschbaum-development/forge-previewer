@@ -37,13 +37,25 @@ trait HandlesOutput
             ? $errors['errors']
             : $errors;
 
-        $lines = [];
+        $collect = function (array $source): array {
+            $lines = [];
 
-        array_walk_recursive($bag, function ($message) use (&$lines) {
-            if (is_scalar($message)) {
-                $lines[] = (string) $message;
-            }
-        });
+            array_walk_recursive($source, function ($message) use (&$lines) {
+                if (is_scalar($message)) {
+                    $lines[] = (string) $message;
+                }
+            });
+
+            return $lines;
+        };
+
+        $lines = $collect($bag);
+
+        // A 422 body can carry an empty "errors" bag alongside a top-level
+        // "message" — fall back to the whole payload so the detail isn't lost.
+        if ($lines === [] && $bag !== $errors) {
+            $lines = $collect($errors);
+        }
 
         return array_values(array_unique($lines));
     }
