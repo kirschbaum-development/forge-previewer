@@ -66,11 +66,11 @@ Both commands require an organization slug (`--org=<slug>` or `FORGE_ORG`) and a
 The `deploy` command is used to do the following things:
 
 1. Create a site on Forge (with the repository and branch installed as part of creation).
-2. Enable **push-to-deploy** so new commits deploy automatically (unless `--no-quick-deploy`).
-3. Generate a Let's Encrypt SSL certificate for the site's primary domain.
-4. Create a database for the new site.
-5. Update the environment variables to point to the database.
-6. Deploy your site once.
+2. Generate a Let's Encrypt SSL certificate for the site's primary domain.
+3. Create a database for the new site.
+4. Update the environment variables to point to the database.
+5. Deploy your site once (unless `--no-deploy`).
+6. Enable **push-to-deploy** so future commits deploy automatically (unless `--no-quick-deploy`).
 7. Run any additional commands provided.
 8. Create a scheduled job if required.
 
