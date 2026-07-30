@@ -12,8 +12,10 @@ use App\Commands\Concerns\InteractsWithEnv;
 use App\Commands\Concerns\ResolvesOrganization;
 use App\Commands\Concerns\GeneratesSiteInfo;
 use App\Commands\Concerns\GeneratesDatabaseInfo;
+use Laravel\Forge\Exceptions\FailedActionException;
 use Laravel\Forge\Exceptions\ForbiddenException;
 use Laravel\Forge\Exceptions\NotFoundException;
+use Laravel\Forge\Exceptions\RateLimitExceededException;
 use Laravel\Forge\Exceptions\ValidationException;
 use Laravel\Forge\Resources\Server;
 use Laravel\Forge\Resources\Site;
@@ -62,15 +64,15 @@ class DestroyCommand extends Command
             return $this->bail("Failed to find server.");
         }
 
-        $site = $this->findSiteByName($server, $this->generateSiteDomain());
-
-        if (! $site) {
-            return $this->bail('Failed to find site.');
-        }
-
-        $this->information('Found site.');
-
         try {
+            $site = $this->findSiteByName($server, $this->generateSiteDomain());
+
+            if (! $site) {
+                return $this->bail('Failed to find site.');
+            }
+
+            $this->information('Found site.');
+
             foreach ($this->option('pre-destroy-command') as $i => $command) {
                 if ($i === 0) {
                     $this->information('Executing pre-destroy command(s)');
@@ -115,6 +117,12 @@ class DestroyCommand extends Command
             return $this->bailValidation($exception->errors());
         } catch (NotFoundException $_) {
             return $this->bail('A Forge resource disappeared mid-destroy (another cleanup may be running). Retry to verify everything is gone.');
+        } catch (ForbiddenException $_) {
+            return $this->bail('Forge denied a request mid-destroy (403). Check the API token\'s scopes for this organization.');
+        } catch (RateLimitExceededException $_) {
+            return $this->bail('The Forge API rate limit was exceeded. Wait a moment and retry.');
+        } catch (FailedActionException $exception) {
+            return $this->bail('Forge could not perform an action: ' . $exception->getMessage());
         } catch (ProvisioningFailedException $exception) {
             return $this->bail($exception->getMessage());
         }
