@@ -16,9 +16,11 @@ trait FindsSiteResources
     protected function safelyIterate(\Closure $fetch): iterable
     {
         try {
-            return $fetch()->lazy();
+            foreach ($fetch()->lazy() as $resource) {
+                yield $resource;
+            }
         } catch (NotFoundException $_) {
-            return [];
+            return;
         }
     }
 

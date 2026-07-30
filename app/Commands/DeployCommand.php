@@ -7,12 +7,12 @@ use App\Commands\Concerns\GeneratesDatabaseInfo;
 use App\Commands\Concerns\GeneratesSiteInfo;
 use App\Commands\Concerns\ResolvesOrganization;
 use Exception;
+use GuzzleHttp\Exception\ConnectException;
 use Illuminate\Support\Facades\File;
 use Laravel\Forge\Forge;
 use Illuminate\Support\Str;
 use Laravel\Forge\Exceptions\ForbiddenException;
 use Laravel\Forge\Exceptions\NotFoundException;
-use Laravel\Forge\Exceptions\TimeoutException;
 use Laravel\Forge\Exceptions\ValidationException;
 use Laravel\Forge\Resources\Site;
 use Laravel\Forge\Resources\Server;
@@ -118,17 +118,19 @@ class DeployCommand extends Command
                 });
             }
 
-            $this->information('Deploying');
+            if (! $this->option('no-deploy')) {
+                $this->information('Deploying');
 
-            $this->forge->createDeployment($this->org, $server->id, $site->id);
+                $this->forge->createDeployment($this->org, $server->id, $site->id);
 
-            // Now that the site is deployed with the correct script + environment,
-            // turn on push-to-deploy so future pushes to the branch auto-deploy.
-            // (Deferred from site creation to avoid a premature default-script deploy.)
-            if ($this->createdSite && ! $this->option('no-quick-deploy')) {
-                $this->information('Enabling push-to-deploy');
+                // Now that the site is deployed with the correct script + environment,
+                // turn on push-to-deploy so future pushes to the branch auto-deploy.
+                // (Deferred from site creation to avoid a premature default-script deploy.)
+                if ($this->createdSite && ! $this->option('no-quick-deploy')) {
+                    $this->information('Enabling push-to-deploy');
 
-                $this->forge->enablePushToDeploy($this->org, $server->id, $site->id, []);
+                    $this->forge->enablePushToDeploy($this->org, $server->id, $site->id, []);
+                }
             }
 
             foreach ($this->option('command') as $i => $command) {
@@ -179,11 +181,15 @@ class DeployCommand extends Command
 
         $this->information('Creating scheduler job');
 
-        $this->forge->createScheduledJob($this->org, $server->id, [
-            'command' => $command,
-            'frequency' => 'minutely',
-            'user' => 'forge',
-        ]);
+        try {
+            $this->forge->createScheduledJob($this->org, $server->id, [
+                'command' => $command,
+                'frequency' => 'minutely',
+                'user' => 'forge',
+            ]);
+        } catch (NotFoundException $_) {
+            throw new \RuntimeException('Scheduled jobs are unavailable on this server. Rerun without --scheduler.');
+        }
     }
 
     protected function buildScheduledJobCommand(): string
@@ -206,11 +212,15 @@ class DeployCommand extends Command
         $this->information('Creating database');
 
         // API v2 accepts the user/password alongside the schema, creating both in one call.
-        $this->forge->createDatabase($this->org, $server->id, [
-            'name' => $this->getDatabaseName(),
-            'user' => $this->getDatabaseUserName(),
-            'password' => $this->getDatabasePassword(),
-        ]);
+        try {
+            $this->forge->createDatabase($this->org, $server->id, [
+                'name' => $this->getDatabaseName(),
+                'user' => $this->getDatabaseUserName(),
+                'password' => $this->getDatabasePassword(),
+            ]);
+        } catch (NotFoundException $_) {
+            throw new \RuntimeException('Managed databases are unavailable on this server. Rerun with --no-db.');
+        }
 
         $this->information('Updating site environment variables');
 
@@ -403,9 +413,7 @@ class DeployCommand extends Command
         $domainId = $this->findPrimaryDomainId($server, $site, $domain);
 
         if ($domainId === null) {
-            $this->information('Skipping SSL certificate: could not find the primary domain record for ' . $domain . '.');
-
-            return;
+            throw new \RuntimeException('Could not find the primary domain record for ' . $domain . '; unable to request its SSL certificate.');
         }
 
         if ($this->option('wildcard')) {
@@ -436,7 +444,13 @@ class DeployCommand extends Command
     protected function certificateAlreadyExists(ValidationException $exception): bool
     {
         foreach ($this->flattenValidationMessages($exception->errors()) as $message) {
-            if (str_contains(strtolower($message), 'already')) {
+            $message = strtolower($message);
+
+            if (str_contains($message, 'certificate')
+                && (str_contains($message, 'already exists')
+                    || str_contains($message, 'already present')
+                    || str_contains($message, 'already active')
+                    || str_contains($message, 'already been issued'))) {
                 return true;
             }
         }
@@ -446,34 +460,35 @@ class DeployCommand extends Command
 
     /**
      * Block until a freshly-created site has finished installing (repo clone +
-     * directory setup). Forge's SiteStatus is "creating"/"installing" while in
-     * progress; anything else (installed/never-deployed/deployed/…) is ready.
+     * directory setup). Only the explicit "installed" status is ready.
      *
-     * @throws \RuntimeException when the site is still installing at the deadline —
-     *         proceeding would race the install (the exact bug this wait prevents).
+     * @throws \RuntimeException when installation fails or misses the deadline.
      */
     protected function waitForSiteInstalled(Site $site): void
     {
-        $inProgress = ['creating', 'installing'];
         $deadline = time() + max((int) ($this->option('timeout') ?? config('app.timeout')), 120);
         $status = 'unknown';
 
         while (time() < $deadline) {
             try {
                 $status = $this->forge->organizationSite($this->org, $site->id)->status;
-            } catch (NotFoundException | TimeoutException $_) {
-                // The site record can briefly 404 right after creation, and slow
-                // requests can time out — both transient. Anything else (auth,
-                // validation) is permanent and should surface immediately.
+            } catch (NotFoundException | ConnectException $_) {
+                // The site record can briefly 404 right after creation, and a
+                // connection can fail transiently. Auth/validation errors surface.
                 sleep(5);
                 continue;
             }
 
-            if (! in_array($status, $inProgress, true)) {
+            if ($status === 'installed') {
                 return;
             }
 
-            $this->information("Waiting for the site to finish installing (status: {$status})...");
+            if (in_array($status, ['failed', 'error'], true)) {
+                throw new \RuntimeException("Site installation failed (status: {$status}).");
+            }
+
+            $displayStatus = $status ?: 'unknown';
+            $this->information("Waiting for the site to finish installing (status: {$displayStatus})...");
             sleep(8);
         }
 
