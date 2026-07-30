@@ -2,6 +2,7 @@
 
 namespace App\Commands;
 
+use App\Exceptions\ProvisioningFailedException;
 use Exception;
 use Illuminate\Support\Str;
 use Laravel\Forge\Forge;
@@ -112,6 +113,8 @@ class DestroyCommand extends Command
             $this->forge->deleteSite($this->org, $server->id, $site->id);
         } catch (ValidationException $exception) {
             return $this->bailValidation($exception->errors());
+        } catch (ProvisioningFailedException $exception) {
+            return $this->bail($exception->getMessage());
         }
 
         $this->success('All done!');
@@ -129,6 +132,8 @@ class DestroyCommand extends Command
         $domainId = $this->findPrimaryDomainId($server, $site, $this->generateSiteDomain());
 
         if ($domainId === null) {
+            $this->information('Skipping SSL certificate cleanup: could not find the primary domain record. Remove any leftover certificate in Forge manually.');
+
             return;
         }
 
