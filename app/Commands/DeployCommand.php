@@ -12,8 +12,10 @@ use GuzzleHttp\Exception\ConnectException;
 use Illuminate\Support\Facades\File;
 use Laravel\Forge\Forge;
 use Illuminate\Support\Str;
+use Laravel\Forge\Exceptions\FailedActionException;
 use Laravel\Forge\Exceptions\ForbiddenException;
 use Laravel\Forge\Exceptions\NotFoundException;
+use Laravel\Forge\Exceptions\RateLimitExceededException;
 use Laravel\Forge\Exceptions\TimeoutException;
 use Laravel\Forge\Exceptions\ValidationException;
 use Laravel\Forge\Resources\Site;
@@ -62,8 +64,6 @@ class DeployCommand extends Command
     protected Forge $forge;
 
     protected string $org;
-
-    protected bool $createdSite = false;
 
     public function handle(Forge $forge)
     {
@@ -130,10 +130,11 @@ class DeployCommand extends Command
 
             // Now that the site is configured with the correct script + environment,
             // turn on push-to-deploy so future pushes to the branch auto-deploy.
-            // (Deferred from site creation to avoid a premature default-script deploy.
-            // Independent of --no-deploy, which only skips the immediate deployment —
-            // a site created with --no-deploy must not lose push-to-deploy forever.)
-            if ($this->createdSite && ! $this->option('no-quick-deploy')) {
+            // (Deferred from site creation to avoid a premature default-script deploy.)
+            // Converge from the site's actual state rather than remembering whether
+            // THIS run created it: a first run that bailed midway must still gain
+            // push-to-deploy when retried.
+            if ($site->quickDeploy !== true && ! $this->option('no-quick-deploy')) {
                 $this->information('Enabling push-to-deploy');
 
                 $this->forge->enablePushToDeploy($this->org, $server->id, $site->id, []);
@@ -156,6 +157,12 @@ class DeployCommand extends Command
             return $this->bail('Timed out waiting for Forge to finish provisioning a resource. Increase --timeout and retry.');
         } catch (NotFoundException $_) {
             return $this->bail('A Forge resource disappeared mid-deploy (the site or server may have been deleted concurrently). Retry the deployment.');
+        } catch (ForbiddenException $_) {
+            return $this->bail('Forge denied a request mid-deploy (403). Check the API token\'s scopes for this organization.');
+        } catch (RateLimitExceededException $_) {
+            return $this->bail('The Forge API rate limit was exceeded. Wait a moment and retry.');
+        } catch (FailedActionException $exception) {
+            return $this->bail('Forge could not perform an action: ' . $exception->getMessage());
         } catch (ProvisioningFailedException $exception) {
             return $this->bail($exception->getMessage());
         }
@@ -220,7 +227,13 @@ class DeployCommand extends Command
             $user = 'br-' . $user;
         }
 
-        return substr($user, 0, 32);
+        // Keep long names unique when clamping: a plain cut would collide for
+        // branches that share their first 32 slug characters.
+        if (strlen($user) > 32) {
+            $user = substr($user, 0, 25) . '-' . substr(md5($user), 0, 6);
+        }
+
+        return $user;
     }
 
     protected function maybeCreateDatabase(Server $server, Site $site)
@@ -337,12 +350,14 @@ class DeployCommand extends Command
         if ($site = $this->findSiteByName($server, $domain)) {
             $this->information('Found existing site.');
 
+            // A found site can still be mid-install (a concurrent deploy) or
+            // mid-teardown (a concurrent destroy) — same rules as a fresh create.
+            $this->waitForSiteInstalled($site);
+
             return $site;
         }
 
         $this->information('Creating site with domain ' . $domain);
-
-        $this->createdSite = true;
 
         // The repository install (source_control_provider/repository/branch) is
         // folded into site creation on API v2 (installGitRepository() is gone).
