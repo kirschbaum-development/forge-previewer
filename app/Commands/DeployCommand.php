@@ -352,7 +352,7 @@ class DeployCommand extends Command
 
             // A found site can still be mid-install (a concurrent deploy) or
             // mid-teardown (a concurrent destroy) — same rules as a fresh create.
-            $this->waitForSiteInstalled($site);
+            $this->waitForSiteInstalled($site, tolerateFailed: true);
 
             return $site;
         }
@@ -400,6 +400,8 @@ class DeployCommand extends Command
             $data['nginx_template_id'] = (int) $this->option('nginx-template');
         }
 
+        $reused = false;
+
         try {
             $site = $this->forge->createSite($this->org, $server->id, $data);
         } catch (ValidationException $exception) {
@@ -411,6 +413,7 @@ class DeployCommand extends Command
                 throw $exception;
             }
 
+            $reused = true;
             $this->information('A site for this domain already exists; reusing it and continuing setup.');
         }
 
@@ -418,7 +421,7 @@ class DeployCommand extends Command
         // to finish before running commands/certs/deployments — otherwise those race
         // the install and fail (e.g. the deploy script's `cd <site dir>` runs before
         // the directory exists).
-        $this->waitForSiteInstalled($site);
+        $this->waitForSiteInstalled($site, tolerateFailed: $reused);
 
         foreach ($this->option('setup-command') as $i => $command) {
             if ($i === 0) {
@@ -507,9 +510,13 @@ class DeployCommand extends Command
      * a reused site is typically already deployed/never-deployed, and waiting
      * for a literal "installed" would spin until the deadline.
      *
+     * A reused site may report "failed" from an earlier run — re-provisioning
+     * it is the recovery path, so callers on a reuse path pass $tolerateFailed.
+     * For a fresh create, "failed" is fatal.
+     *
      * @throws ProvisioningFailedException when installation fails or misses the deadline.
      */
-    protected function waitForSiteInstalled(Site $site): void
+    protected function waitForSiteInstalled(Site $site, bool $tolerateFailed = false): void
     {
         $inProgress = ['creating', 'installing'];
         $deadline = time() + max((int) ($this->option('timeout') ?? config('app.timeout')), 120);
@@ -526,7 +533,13 @@ class DeployCommand extends Command
             }
 
             if ($status === 'failed') {
-                throw new ProvisioningFailedException('Site installation failed (status: failed).');
+                if (! $tolerateFailed) {
+                    throw new ProvisioningFailedException('Site installation failed (status: failed).');
+                }
+
+                $this->information('Site status is "failed" from an earlier run; attempting to re-provision it.');
+
+                return;
             }
 
             if (in_array($status, ['removing', 'uninstalling'], true)) {
