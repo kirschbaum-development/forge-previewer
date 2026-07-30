@@ -42,6 +42,14 @@ jobs:
         # phar:// path, so proc_open() fails and the packaged artifact cannot boot.
         # Bake the tag in as a literal so the binary never shells out to git.
         run: |
+          # The tag is spliced into a sed script and a single-quoted PHP string:
+          # restrict it to characters that are inert in both contexts.
+          case "${GITHUB_REF_NAME}" in
+            (*[!A-Za-z0-9._-]*)
+              echo "Refusing to stamp tag '${GITHUB_REF_NAME}': only [A-Za-z0-9._-] are allowed in release tags."
+              exit 1
+              ;;
+          esac
           sed -i "s|app('git.version')|'${GITHUB_REF_NAME}'|" config/app.php
           grep "'version'" config/app.php
 
