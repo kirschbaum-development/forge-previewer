@@ -50,6 +50,8 @@ composer install --no-dev
 box compile                        # produces forge-previewer.phar
 ```
 
+A PHAR compiled this way reports version `unreleased`: `git describe` cannot run from inside a PHAR, so the version falls back to a placeholder. The release workflow stamps the real tag into `config/app.php` before compiling — do the same for a versioned manual build.
+
 `composer.json`'s `bin` points at the source entry script, so `composer global require` also works once this fork is published to a Packagist/VCS repository you control.
 
 ## Usage

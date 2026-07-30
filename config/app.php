@@ -26,7 +26,17 @@ return [
     |
     */
 
-    'version' => app('git.version'),
+    // git.version shells out to `git describe`, which cannot run inside a PHAR
+    // (the cwd is a phar:// path, so proc_open fails) and fails outside a git
+    // checkout. Fall back to a placeholder; the release workflow stamps the
+    // real tag over this block before compiling the PHAR.
+    'version' => (function () {
+        try {
+            return app('git.version');
+        } catch (\Throwable $_) {
+            return 'unreleased';
+        }
+    })(),
 
     /*
     |--------------------------------------------------------------------------
