@@ -6,7 +6,61 @@ use function Termwind\render;
 
 trait HandlesOutput
 {
-    protected function fail(string $message): int
+    /**
+     * Render the field-level errors from a Forge 422 response and fail.
+     *
+     * The SDK hands back the decoded response body, which is typically shaped
+     * as ['message' => ..., 'errors' => ['field' => ['message', ...]]]. We pull
+     * the nested "errors" bag when present and flatten every message.
+     *
+     * @param  array<mixed>  $errors
+     */
+    protected function bailValidation(array $errors): int
+    {
+        $lines = $this->flattenValidationMessages($errors);
+
+        $detail = $lines === [] ? '' : ' ' . implode(' | ', $lines);
+
+        return $this->bail('Forge rejected the request (422 validation error).' . $detail);
+    }
+
+    /**
+     * Flatten a Forge 422 body (['message' => ..., 'errors' => ['field' => ['msg']]])
+     * into a de-duplicated list of message strings.
+     *
+     * @param  array<mixed>  $errors
+     * @return array<int, string>
+     */
+    protected function flattenValidationMessages(array $errors): array
+    {
+        $bag = isset($errors['errors']) && is_array($errors['errors'])
+            ? $errors['errors']
+            : $errors;
+
+        $collect = function (array $source): array {
+            $lines = [];
+
+            array_walk_recursive($source, function ($message) use (&$lines) {
+                if (is_scalar($message)) {
+                    $lines[] = (string) $message;
+                }
+            });
+
+            return $lines;
+        };
+
+        $lines = $collect($bag);
+
+        // A 422 body can carry an empty "errors" bag alongside a top-level
+        // "message" — fall back to the whole payload so the detail isn't lost.
+        if ($lines === [] && $bag !== $errors) {
+            $lines = $collect($errors);
+        }
+
+        return array_values(array_unique($lines));
+    }
+
+    protected function bail(string $message): int
     {
         render(sprintf(<<<'html'
             <div class="font-bold">

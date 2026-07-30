@@ -1,0 +1,184 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  # Extensions justified against the dependency require blocks:
+  #  - zlib  is MANDATORY because box.json uses GZ phar compression.
+  #  - iconv is required by symfony/polyfill-mbstring (Box's requirements
+  #    checker rejects the binary without it).
+  SPC_EXTENSIONS: bcmath,ctype,curl,dom,fileinfo,filter,hash,iconv,libxml,mbstring,openssl,pcntl,phar,posix,session,simplexml,sockets,tokenizer,xml,xmlreader,xmlwriter,zlib
+  PHP_VERSION: '8.5'
+
+jobs:
+  # 1. Compile the PHAR with Box. This is a build-time intermediate only — it is
+  #    consumed by micro:combine below and is NOT published as a release asset.
+  build-phar:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: bcmath, ctype, curl, dom, fileinfo, filter, hash, iconv, libxml, mbstring, openssl, pcntl, phar, posix, session, simplexml, sockets, tokenizer, xml, xmlreader, xmlwriter, zlib
+          ini-values: phar.readonly=0
+          coverage: none
+
+      - name: Install dependencies (production)
+        run: composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: Stamp release version
+        # config/app.php resolves the version via app('git.version'), which shells
+        # out to `git describe` at boot. Inside a PHAR the working directory is a
+        # phar:// path, so proc_open() fails and the packaged artifact cannot boot.
+        # Bake the tag in as a literal so the binary never shells out to git.
+        run: |
+          # The tag is spliced into a sed script and a single-quoted PHP string:
+          # restrict it to characters that are inert in both contexts.
+          case "${GITHUB_REF_NAME}" in
+            (*[!A-Za-z0-9._-]*)
+              echo "Refusing to stamp tag '${GITHUB_REF_NAME}': only [A-Za-z0-9._-] are allowed in release tags."
+              exit 1
+              ;;
+          esac
+          sed -i "s|app('git.version')|'${GITHUB_REF_NAME}'|" config/app.php
+          grep "'version'" config/app.php
+
+      - name: Install Box
+        run: |
+          composer global require humbug/box:^4.6 --no-interaction
+          echo "$(composer global config home -q)/vendor/bin" >> "$GITHUB_PATH"
+
+      - name: Compile PHAR
+        run: |
+          box compile --no-interaction
+          # box.json sets no explicit output; Box derives it from the composer.json
+          # "bin" (forge-previewer) -> forge-previewer.phar. Normalise defensively.
+          PHAR="$(ls -1 *.phar | head -n1)"
+          if [ "$PHAR" != "forge-previewer.phar" ]; then mv "$PHAR" forge-previewer.phar; fi
+          php forge-previewer.phar --version
+
+      - name: Upload PHAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: forge-previewer-phar
+          path: forge-previewer.phar
+          retention-days: 1
+
+  # 2. Build a fully-static (musl) micro.sfx with the embedded PHP and combine it
+  #    with the PHAR. The musl static binary has zero libc dependency, so one
+  #    x86_64 binary runs on Ubuntu 20.04, 24.04, and everything else.
+  build-static-binary:
+    runs-on: ubuntu-24.04
+    needs: build-phar
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download PHAR artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: forge-previewer-phar
+
+      - name: Setup PHP (spc tooling host)
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          coverage: none
+
+      - name: Checkout static-php-cli (pinned)
+        uses: actions/checkout@v4
+        with:
+          # Pin to a tagged release. Never main — the v3 rebrand is unreleased.
+          repository: crazywhalecc/static-php-cli
+          ref: '2.8.5'
+          path: static-php-cli
+
+      - name: Install spc dependencies
+        working-directory: static-php-cli
+        run: composer install --no-dev --no-interaction --prefer-dist
+
+      - name: Cache spc downloads and build root
+        uses: actions/cache@v4
+        with:
+          path: |
+            static-php-cli/downloads
+            static-php-cli/buildroot
+          key: spc-${{ runner.os }}-php${{ env.PHP_VERSION }}-${{ hashFiles('.github/workflows/release.yml') }}
+
+      - name: spc doctor
+        working-directory: static-php-cli
+        run: ./bin/spc doctor --auto-fix
+
+      - name: Download sources
+        working-directory: static-php-cli
+        run: ./bin/spc download --for-extensions="${{ env.SPC_EXTENSIONS }}" --with-php=${{ env.PHP_VERSION }}
+
+      - name: Build micro.sfx
+        working-directory: static-php-cli
+        run: ./bin/spc build "${{ env.SPC_EXTENSIONS }}" --build-micro
+
+      - name: Combine micro.sfx + PHAR
+        working-directory: static-php-cli
+        run: ./bin/spc micro:combine ../forge-previewer.phar --output=../forge-previewer-linux-x86_64
+
+      - name: Smoke test (native, ubuntu-24.04)
+        run: |
+          chmod +x forge-previewer-linux-x86_64
+          ./forge-previewer-linux-x86_64 --version
+          ./forge-previewer-linux-x86_64 list
+          ./forge-previewer-linux-x86_64 deploy --help
+
+      - name: Smoke test (ubuntu:20.04 container — proves 20.04 compat)
+        run: |
+          docker run --rm -v "$PWD":/work -w /work ubuntu:20.04 ./forge-previewer-linux-x86_64 --version
+          docker run --rm -v "$PWD":/work -w /work ubuntu:20.04 ./forge-previewer-linux-x86_64 list
+
+      - name: Prepare release assets
+        run: |
+          # Byte-identical copies so the release page explicitly shows both
+          # supported targets. The static binary is the same everywhere.
+          cp forge-previewer-linux-x86_64 forge-previewer-ubuntu-24.04
+          cp forge-previewer-linux-x86_64 forge-previewer-ubuntu-20.04
+          sha256sum forge-previewer-linux-x86_64 forge-previewer-ubuntu-24.04 forge-previewer-ubuntu-20.04 > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload release binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-binaries
+          path: |
+            forge-previewer-linux-x86_64
+            forge-previewer-ubuntu-24.04
+            forge-previewer-ubuntu-20.04
+            SHA256SUMS.txt
+          retention-days: 1
+
+  # 3. Attach the binaries (and checksums) to the GitHub Release for the tag.
+  release:
+    runs-on: ubuntu-24.04
+    needs: build-static-binary
+    steps:
+      - name: Download release binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: release-binaries
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            forge-previewer-linux-x86_64
+            forge-previewer-ubuntu-24.04
+            forge-previewer-ubuntu-20.04
+            SHA256SUMS.txt
+          generate_release_notes: true
