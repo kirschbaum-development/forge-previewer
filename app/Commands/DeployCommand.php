@@ -95,9 +95,11 @@ class DeployCommand extends Command
                     ? file_get_contents(str_replace('@', '', $this->option('deployment-script')))
                     : $this->option('deployment-script');
 
-                $this->forge->updateDeploymentScript($this->org, $server->id, $site->id, [
-                    'content' => $this->replaceVariables($deploymentScript),
-                ]);
+                $this->withProvisioningRetry(function () use ($server, $site, $deploymentScript) {
+                    $this->forge->updateDeploymentScript($this->org, $server->id, $site->id, [
+                        'content' => $this->replaceVariables($deploymentScript),
+                    ]);
+                });
             }
 
             if (! $this->option('no-db')) {
@@ -152,6 +154,8 @@ class DeployCommand extends Command
             return $this->bailValidation($exception->errors());
         } catch (TimeoutException $_) {
             return $this->bail('Timed out waiting for Forge to finish provisioning a resource. Increase --timeout and retry.');
+        } catch (NotFoundException $_) {
+            return $this->bail('A Forge resource disappeared mid-deploy (the site or server may have been deleted concurrently). Retry the deployment.');
         } catch (ProvisioningFailedException $exception) {
             return $this->bail($exception->getMessage());
         }
@@ -201,6 +205,22 @@ class DeployCommand extends Command
     protected function buildScheduledJobCommand(): string
     {
         return sprintf("php /home/forge/%s/artisan schedule:run", $this->generateSiteDomain());
+    }
+
+    /**
+     * Forge requires isolated_user to match ^[a-z][-a-z0-9_]*$ (max 32 chars).
+     * A slugged branch name can start with a digit (e.g. "123-fix-thing"), so
+     * prefix it when needed and clamp the length.
+     */
+    protected function generateIsolatedUser(): string
+    {
+        $user = str($this->getBranchName())->slug()->toString();
+
+        if (! preg_match('/^[a-z]/', $user)) {
+            $user = 'br-' . $user;
+        }
+
+        return substr($user, 0, 32);
     }
 
     protected function maybeCreateDatabase(Server $server, Site $site)
@@ -356,7 +376,7 @@ class DeployCommand extends Command
             $this->information('Enabling site isolation');
 
             $data['is_isolated'] = true;
-            $data['isolated_user'] = str($this->getBranchName())->slug()->toString();
+            $data['isolated_user'] = $this->generateIsolatedUser();
         }
 
         if ($this->option('nginx-template')) {
@@ -492,6 +512,10 @@ class DeployCommand extends Command
 
             if ($status === 'failed') {
                 throw new ProvisioningFailedException('Site installation failed (status: failed).');
+            }
+
+            if (in_array($status, ['removing', 'uninstalling'], true)) {
+                throw new ProvisioningFailedException("The site is being removed (status: {$status}) — a concurrent destroy may be running. Retry once it finishes.");
             }
 
             if (! in_array($status, $inProgress, true)) {
